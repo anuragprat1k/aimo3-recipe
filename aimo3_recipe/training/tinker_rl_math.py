@@ -23,8 +23,8 @@ import tinker
 from datasets import load_dataset, Dataset
 
 # Tinker imports
-from tinker_cookbook.abstractions.renderers import Llama3ChatRenderer, Qwen2ChatRenderer
-from tinker_cookbook.abstractions.hparams import compute_lora_learning_rate
+from tinker_cookbook.renderers import Qwen3Renderer, Renderer
+from tinker_cookbook.hyperparam_utils import get_lr
 
 
 logger = logging.getLogger(__name__)
@@ -151,15 +151,14 @@ def build_config_blueprint() -> chz.Blueprint:
     return chz.Blueprint(MathRLConfig)
 
 
-def get_renderer(model_name: str):
+def get_renderer(model_name: str, tokenizer) -> Renderer:
     """Get appropriate chat renderer for the model."""
+    # Use Qwen3Renderer for Qwen models, default renderer otherwise
     if "qwen" in model_name.lower():
-        return Qwen2ChatRenderer()
-    elif "llama" in model_name.lower():
-        return Llama3ChatRenderer()
+        return Qwen3Renderer(tokenizer)
     else:
-        # Default to Qwen format
-        return Qwen2ChatRenderer()
+        # Default to Qwen3 format (most common for math models)
+        return Qwen3Renderer(tokenizer)
 
 
 async def train_math_rl(config: MathRLConfig) -> None:
@@ -187,13 +186,18 @@ async def train_math_rl(config: MathRLConfig) -> None:
 
     logger.info(f"Starting math RL training with config: {config}")
 
+    # Load tokenizer for renderer
+    from transformers import AutoTokenizer
+    logger.info(f"Loading tokenizer for {config.model_name}")
+    tokenizer = AutoTokenizer.from_pretrained(config.model_name)
+
     # Initialize renderer
-    renderer = get_renderer(config.model_name)
+    renderer = get_renderer(config.model_name, tokenizer)
 
     # Compute learning rate based on LoRA rank if not specified
     learning_rate = config.learning_rate
     if learning_rate is None:
-        learning_rate = compute_lora_learning_rate(config.lora_rank)
+        learning_rate = get_lr(config.model_name, config.lora_rank)
     logger.info(f"Using learning rate: {learning_rate}")
 
     # Load dataset

@@ -24,15 +24,34 @@ Stage 1: SFT-CoT     →  Stage 2: SFT-TIR    →  Stage 3: RL
 
 ## Installation
 
+### Quick Setup (Recommended)
+
 ```bash
 # Clone the repository
 git clone https://github.com/your-org/aimo3-recipe.git
 cd aimo3-recipe
 
-# Install dependencies
+# Run the setup script (creates conda env and installs all dependencies)
+./setup_env.sh
+
+# Activate the environment
+conda activate aimo3
+```
+
+### Manual Installation
+
+```bash
+# Create a Python environment
+conda create -n aimo3 python=3.11
+conda activate aimo3
+
+# Install the package
 pip install -e .
 
-# For development
+# Install tinker-cookbook from GitHub (required for Tinker training)
+pip install git+https://github.com/thinking-machines-lab/tinker-cookbook.git
+
+# For development (includes pytest, ruff, mypy)
 pip install -e ".[dev]"
 ```
 
@@ -40,7 +59,7 @@ pip install -e ".[dev]"
 
 - Python 3.10+
 - CUDA 12.0+ (for local training)
-- Tinker API key (for remote training)
+- Tinker API key (for remote training) - get one at https://tinker-console.thinkingmachines.ai/
 
 ## Quick Start
 
@@ -65,20 +84,29 @@ python -m aimo3_recipe.training.train --stage rl
 Use Tinker SDK to train on remote GPU clusters:
 
 ```bash
-# Set your Tinker API key
+# Set your Tinker API key (or add to .env file)
 export TINKER_API_KEY=your_key_here
 
 # Run SFT training
-python -m aimo3_recipe.training.tinker_sft_math \
-    --model_name Qwen/Qwen2.5-14B \
-    --stage cot \
-    --log_dir ./outputs/tinker_cot
+python aimo3_recipe/training/tinker_sft_math.py \
+    model_name=Qwen/Qwen2.5-14B \
+    stage=cot \
+    log_dir=./outputs/tinker_cot
 
 # Run RL training
-python -m aimo3_recipe.training.tinker_rl_math \
-    --model_name Qwen/Qwen2.5-14B \
-    --log_dir ./outputs/tinker_rl
+python aimo3_recipe/training/tinker_rl_math.py \
+    model_name=Qwen/Qwen2.5-14B \
+    log_dir=./outputs/tinker_rl
+
+# Run with smaller test configuration
+python aimo3_recipe/training/tinker_rl_math.py \
+    model_name=Qwen/Qwen2.5-14B \
+    max_samples=10 \
+    batch_size=2 \
+    group_size=4
 ```
+
+Note: Arguments use `key=value` format (no dashes) as this uses the `chz` configuration library.
 
 ### 3. Evaluation
 
