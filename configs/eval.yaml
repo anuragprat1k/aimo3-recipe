@@ -1,0 +1,33 @@
+# Evaluation configuration
+
+# Model to evaluate
+model:
+  path: "./outputs/rl_math"
+  use_vllm: true
+
+# Benchmarks to evaluate on
+benchmarks:
+  - math           # Full MATH benchmark
+  - math_level5    # MATH Level 5 (hardest)
+  - aime           # AIME problems
+  - amc            # AMC problems
+
+# Generation settings
+generation:
+  max_new_tokens: 4096
+  temperature: 0.0  # Greedy for single-shot
+
+# Self-consistency settings (set num_samples > 1 to enable)
+self_consistency:
+  num_samples: 1
+  temperature: 0.7
+
+# TIR settings
+tir:
+  enabled: false
+  max_code_executions: 5
+
+# Output
+output:
+  dir: "./eval_results"
+  save_predictions: true

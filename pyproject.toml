@@ -1,0 +1,75 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "aimo3-recipe"
+version = "0.1.0"
+description = "Post-training recipes for LLMs on MATH datasets, targeting AIMO3 competition"
+readme = "README.md"
+requires-python = ">=3.10"
+license = {text = "Apache-2.0"}
+authors = [
+    {name = "AIMO3 Recipe Contributors"}
+]
+keywords = ["llm", "math", "reasoning", "aimo", "fine-tuning", "reinforcement-learning"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: Apache Software License",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+
+dependencies = [
+    "tinker-sdk>=0.1.0",
+    "transformers>=4.40.0",
+    "torch>=2.2.0",
+    "datasets>=2.18.0",
+    "accelerate>=0.28.0",
+    "peft>=0.10.0",
+    "bitsandbytes>=0.43.0",
+    "trl>=0.8.0",
+    "wandb>=0.16.0",
+    "numpy>=1.26.0",
+    "pandas>=2.2.0",
+    "sympy>=1.12",
+    "latex2sympy2>=1.9.0",
+    "inspect-ai>=0.3.0",
+    "vllm>=0.4.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-asyncio>=0.23.0",
+    "ruff>=0.3.0",
+    "mypy>=1.9.0",
+    "pre-commit>=3.6.0",
+]
+
+[project.urls]
+Repository = "https://github.com/your-org/aimo3-recipe"
+Documentation = "https://github.com/your-org/aimo3-recipe#readme"
+
+[project.scripts]
+aimo3-train = "aimo3_recipe.training.train:main"
+aimo3-eval = "aimo3_recipe.evaluation.evaluate:main"
+aimo3-infer = "aimo3_recipe.inference.generate:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["aimo3_recipe*"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "W", "UP"]
+ignore = ["E501"]
+
+[tool.mypy]
+python_version = "3.10"
+ignore_missing_imports = true

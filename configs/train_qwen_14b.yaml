@@ -1,0 +1,78 @@
+# Training configuration for Qwen2.5-14B on MATH datasets
+# This is the recommended configuration for AIMO3 competition
+
+# Base model
+model:
+  name: "Qwen/Qwen2.5-14B"
+  trust_remote_code: true
+  use_flash_attention: true
+
+# LoRA configuration
+lora:
+  enabled: true
+  rank: 64
+  alpha: 128
+  dropout: 0.05
+  target_modules:
+    - q_proj
+    - k_proj
+    - v_proj
+    - o_proj
+    - gate_proj
+    - up_proj
+    - down_proj
+
+# Quantization (for memory efficiency)
+quantization:
+  load_in_4bit: true
+  bnb_4bit_compute_dtype: bfloat16
+  bnb_4bit_quant_type: nf4
+
+# Stage 1: Chain-of-Thought SFT
+stage1_cot:
+  dataset: "AI-MO/NuminaMath-CoT"
+  num_epochs: 3
+  batch_size: 4
+  gradient_accumulation_steps: 8
+  learning_rate: 2e-5
+  max_seq_length: 4096
+  warmup_ratio: 0.03
+  output_dir: "./outputs/sft_cot"
+
+# Stage 2: Tool-Integrated Reasoning SFT
+stage2_tir:
+  dataset: "AI-MO/NuminaMath-TIR"
+  num_epochs: 2
+  batch_size: 2
+  gradient_accumulation_steps: 16
+  learning_rate: 1e-5
+  max_seq_length: 8192
+  warmup_ratio: 0.03
+  output_dir: "./outputs/sft_tir"
+
+# Stage 3: RL with correctness rewards
+stage3_rl:
+  dataset: "lighteval/MATH"
+  num_epochs: 1
+  batch_size: 64
+  group_size: 16
+  learning_rate: 1e-6
+  max_tokens: 4096
+  temperature: 0.7
+  correct_reward: 1.0
+  incorrect_reward: -0.5
+  format_bonus: 0.1
+  output_dir: "./outputs/rl_math"
+
+# Logging
+logging:
+  report_to: wandb
+  project: "aimo3-recipe"
+  logging_steps: 10
+  save_steps: 500
+  eval_steps: 500
+
+# Hardware
+hardware:
+  bf16: true
+  gradient_checkpointing: true
