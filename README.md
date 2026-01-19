@@ -95,12 +95,12 @@ python aimo3_recipe/training/tinker_sft_math.py \
 
 # Run RL training
 python aimo3_recipe/training/tinker_rl_math.py \
-    model_name=Qwen/Qwen2.5-14B \
+    model_name=Qwen/Qwen3-8B \
     log_dir=./outputs/tinker_rl
 
 # Run with smaller test configuration
 python aimo3_recipe/training/tinker_rl_math.py \
-    model_name=Qwen/Qwen2.5-14B \
+    model_name=Qwen/Qwen3-8B \
     max_samples=10 \
     batch_size=2 \
     group_size=4

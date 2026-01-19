@@ -239,33 +239,58 @@ async def train_math_rl(config: MathRLConfig) -> None:
         # Shuffle dataset each epoch
         dataset = dataset.shuffle(seed=epoch)
 
+        # Sampling params for generation
+        sampling_params = tinker.types.SamplingParams(
+            max_tokens=config.max_tokens,
+            temperature=config.temperature,
+            top_p=config.top_p,
+            stop=renderer.get_stop_sequences(),
+        )
+
+        # Adam params for optimization
+        adam_params = tinker.types.AdamParams(
+            learning_rate=learning_rate,
+            beta1=0.9,
+            beta2=0.95,
+            eps=1e-8,
+            weight_decay=0.0,
+            grad_clip_norm=1.0,
+        )
+
         for batch_start in range(0, len(dataset), config.batch_size):
             batch_end = min(batch_start + config.batch_size, len(dataset))
             batch = dataset.select(range(batch_start, batch_end))
 
-            batch_data = []
+            datums: list[tinker.types.Datum] = []
 
             for example in batch:
                 problem = example["problem"]
                 ground_truth = example["solution"]
 
-                # Format prompt
-                prompt = renderer.render_prompt(problem)
+                # Format prompt using renderer's message format
+                messages = [{"role": "user", "content": problem}]
+                prompt = renderer.build_generation_prompt(messages)
 
                 # Generate multiple solutions
-                responses = sampling_client.sample(
+                sample_response = sampling_client.sample(
                     prompt=prompt,
-                    n=config.group_size,
-                    max_tokens=config.max_tokens,
-                    temperature=config.temperature,
-                    top_p=config.top_p,
-                )
+                    num_samples=config.group_size,
+                    sampling_params=sampling_params,
+                ).result()
 
                 # Compute rewards for each response
                 rewards = []
-                for response in responses:
-                    reward = compute_reward(response.text, ground_truth, config)
+                response_data = []
+                for sequence in sample_response.sequences:
+                    sampled_tokens = sequence.tokens
+                    sampled_logprobs = sequence.logprobs
+                    assert sampled_logprobs is not None
+
+                    # Decode tokens to text for reward computation
+                    response_text = tokenizer.decode(sampled_tokens, skip_special_tokens=True)
+                    reward = compute_reward(response_text, ground_truth, config)
                     rewards.append(reward)
+                    response_data.append((sampled_tokens, sampled_logprobs))
 
                     # Track metrics
                     total_count += 1
@@ -282,35 +307,38 @@ async def train_math_rl(config: MathRLConfig) -> None:
                 if all(abs(a) < 1e-6 for a in advantages):
                     continue
 
-                # Create training data for positive advantage samples
-                for response, reward, advantage in zip(responses, rewards, advantages):
-                    if advantage > 0:
-                        # Prepare training datum
-                        full_text = prompt + response.text
+                # Create training datums following tinker-cookbook format
+                prompt_len = prompt.length - 1  # observation length
+                for (sampled_tokens, sampled_logprobs), advantage in zip(response_data, advantages):
+                    # Build model input: prompt + response tokens (excluding last token)
+                    model_input = prompt.append(tinker.types.EncodedTextChunk(tokens=sampled_tokens[:-1]))
 
-                        datum = {
-                            "input_text": full_text,
-                            "target_text": response.text,
-                            "log_probs": response.log_probs,
-                            "advantage": advantage,
-                        }
-                        batch_data.append(datum)
+                    # Pad target tokens, logprobs, and advantages
+                    target_tokens = [0] * prompt_len + sampled_tokens
+                    padded_logprobs = [0.0] * prompt_len + list(sampled_logprobs)
+                    padded_advantages = [0.0] * prompt_len + [advantage] * (model_input.length - prompt_len)
 
-            # Skip if no positive advantage samples
-            if not batch_data:
+                    assert model_input.length == len(target_tokens) == len(padded_logprobs) == len(padded_advantages)
+
+                    datum = tinker.types.Datum(
+                        model_input=model_input,
+                        loss_fn_inputs={
+                            "target_tokens": tinker.TensorData(data=target_tokens, dtype="int64", shape=[len(target_tokens)]),
+                            "logprobs": tinker.TensorData(data=padded_logprobs, dtype="float32", shape=[len(padded_logprobs)]),
+                            "advantages": tinker.TensorData(data=padded_advantages, dtype="float32", shape=[len(padded_advantages)]),
+                        },
+                    )
+                    datums.append(datum)
+
+            # Skip if no datums
+            if not datums:
                 continue
 
-            # Forward-backward pass on batch
-            training_client.forward_backward(
-                data=batch_data,
-                loss_type="importance_sampling",
-            )
-
-            # Optimization step
-            training_client.optim_step(
-                optimizer="adam",
-                learning_rate=learning_rate,
-            )
+            # Forward-backward pass and optimization step
+            fwd_bwd_future = training_client.forward_backward(datums, loss_fn="importance_sampling")
+            optim_step_future = training_client.optim_step(adam_params)
+            fwd_bwd_future.result()
+            optim_step_future.result()
 
             step += 1
 
