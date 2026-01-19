@@ -108,6 +108,34 @@ python aimo3_recipe/training/tinker_rl_math.py \
 
 Note: Arguments use `key=value` format (no dashes) as this uses the `chz` configuration library.
 
+#### Logging & Visualization
+
+Enable verbose loss output and WandB logging for training visualization:
+
+```bash
+# Verbose console output (prints loss metrics every step)
+python aimo3_recipe/training/tinker_rl_math.py \
+    model_name=Qwen/Qwen3-8B \
+    max_samples=100 \
+    verbose=True
+
+# WandB logging for real-time visualization
+export WANDB_API_KEY=your_key_here
+python aimo3_recipe/training/tinker_rl_math.py \
+    model_name=Qwen/Qwen3-8B \
+    wandb_project=aimo3-rl-math \
+    wandb_name=experiment-1
+```
+
+**Logging options:**
+| Option | Description |
+|--------|-------------|
+| `verbose=True` | Print loss metrics at every step |
+| `wandb_project=NAME` | Enable WandB logging to project |
+| `wandb_name=NAME` | Optional run name for WandB |
+
+Metrics are also saved to `{log_dir}/metrics.jsonl` for offline analysis.
+
 ### 3. Evaluation
 
 ```bash

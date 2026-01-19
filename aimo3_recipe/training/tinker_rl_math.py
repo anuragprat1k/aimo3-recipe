@@ -25,6 +25,7 @@ from datasets import load_dataset, Dataset
 # Tinker imports
 from tinker_cookbook.renderers import Qwen3Renderer, Renderer
 from tinker_cookbook.hyperparam_utils import get_lr
+from tinker_cookbook.utils.ml_log import setup_logging, Logger
 
 
 logger = logging.getLogger(__name__)
@@ -66,6 +67,11 @@ class MathRLConfig:
 
     # Resume from checkpoint
     resume_from: Optional[str] = None
+
+    # Logging options
+    wandb_project: Optional[str] = None  # Set to enable WandB logging (e.g., "aimo3-rl-math")
+    wandb_name: Optional[str] = None  # Optional run name for WandB
+    verbose: bool = False  # Enable verbose loss output every step
 
 
 def extract_boxed_answer(text: str) -> Optional[str]:
@@ -172,19 +178,21 @@ async def train_math_rl(config: MathRLConfig) -> None:
     4. Train on positive advantage samples
     """
 
-    # Setup logging
+    # Setup logging with optional WandB integration
     log_dir = Path(config.log_dir)
     log_dir.mkdir(parents=True, exist_ok=True)
-    logging.basicConfig(
-        level=logging.INFO,
-        format='%(asctime)s - %(levelname)s - %(message)s',
-        handlers=[
-            logging.FileHandler(log_dir / "training.log"),
-            logging.StreamHandler(),
-        ]
+
+    # Initialize ml_logger (supports WandB, JSON, and console logging)
+    ml_logger = setup_logging(
+        log_dir=str(log_dir),
+        wandb_project=config.wandb_project,
+        wandb_name=config.wandb_name,
+        config=config,
     )
 
     logger.info(f"Starting math RL training with config: {config}")
+    if config.wandb_project:
+        logger.info(f"WandB logging enabled for project: {config.wandb_project}")
 
     # Load tokenizer for renderer
     from transformers import AutoTokenizer
@@ -337,20 +345,42 @@ async def train_math_rl(config: MathRLConfig) -> None:
             # Forward-backward pass and optimization step
             fwd_bwd_future = training_client.forward_backward(datums, loss_fn="importance_sampling")
             optim_step_future = training_client.optim_step(adam_params)
-            fwd_bwd_future.result()
+            fwd_bwd_result = fwd_bwd_future.result()
             optim_step_future.result()
 
             step += 1
 
-            # Logging
-            if step % 10 == 0:
-                avg_reward = sum(total_rewards[-100:]) / len(total_rewards[-100:])
-                accuracy = correct_count / total_count if total_count > 0 else 0
+            # Compute metrics for logging
+            avg_reward = sum(total_rewards[-100:]) / max(len(total_rewards[-100:]), 1)
+            accuracy = correct_count / total_count if total_count > 0 else 0
+
+            # Build metrics dictionary
+            metrics = {
+                "train/step": step,
+                "train/avg_reward": avg_reward,
+                "train/accuracy": accuracy,
+                "train/batch_datums": len(datums),
+                "train/learning_rate": learning_rate,
+            }
+
+            # Add loss metrics from forward_backward result
+            if hasattr(fwd_bwd_result, 'metrics') and fwd_bwd_result.metrics:
+                for key, value in fwd_bwd_result.metrics.items():
+                    metrics[f"loss/{key}"] = value
+
+            # Verbose logging every step
+            if config.verbose or step % 10 == 0:
                 logger.info(
                     f"Step {step}: avg_reward={avg_reward:.4f}, "
                     f"accuracy={accuracy:.2%}, "
-                    f"batch_samples={len(batch_data)}"
+                    f"batch_datums={len(datums)}"
                 )
+                if config.verbose and hasattr(fwd_bwd_result, 'metrics') and fwd_bwd_result.metrics:
+                    loss_str = ", ".join(f"{k}={v:.6f}" for k, v in fwd_bwd_result.metrics.items())
+                    logger.info(f"  Loss metrics: {loss_str}")
+
+            # Log to WandB/JSON
+            ml_logger.log_metrics(metrics, step=step)
 
             # Save checkpoint
             if step % config.save_every == 0:
@@ -369,6 +399,16 @@ async def train_math_rl(config: MathRLConfig) -> None:
     # Log final statistics
     final_accuracy = correct_count / total_count if total_count > 0 else 0
     logger.info(f"Final accuracy: {final_accuracy:.2%} ({correct_count}/{total_count})")
+
+    # Log final metrics
+    ml_logger.log_metrics({
+        "final/accuracy": final_accuracy,
+        "final/correct_count": correct_count,
+        "final/total_count": total_count,
+    }, step=step)
+
+    # Cleanup logger (important for WandB to finish uploading)
+    ml_logger.close()
 
 
 def main():

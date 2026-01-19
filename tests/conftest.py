@@ -23,22 +23,34 @@ MOCK_MODULES = [
     'wandb',
     'vllm',
     'tinker',
+    'tinker.types',
     'chz',
     'tinker_cookbook',
-    'tinker_cookbook.abstractions',
-    'tinker_cookbook.abstractions.renderers',
-    'tinker_cookbook.abstractions.hparams',
+    'tinker_cookbook.renderers',
+    'tinker_cookbook.hyperparam_utils',
+    'tinker_cookbook.utils',
+    'tinker_cookbook.utils.ml_log',
 ]
 
 for mod_name in MOCK_MODULES:
     if mod_name not in sys.modules:
         sys.modules[mod_name] = MagicMock()
 
-# Setup mock renderer classes to return proper mock instances
-mock_renderers = sys.modules['tinker_cookbook.abstractions.renderers']
-mock_renderers.Llama3ChatRenderer = type('Llama3ChatRenderer', (), {})
-mock_renderers.Qwen2ChatRenderer = type('Qwen2ChatRenderer', (), {})
+# Setup mock renderer classes (need __init__ to accept tokenizer)
+mock_renderers = sys.modules['tinker_cookbook.renderers']
 
-# Setup mock hparams
-mock_hparams = sys.modules['tinker_cookbook.abstractions.hparams']
-mock_hparams.compute_lora_learning_rate = lambda rank: 1e-4
+class MockQwen3Renderer:
+    def __init__(self, tokenizer):
+        self.tokenizer = tokenizer
+
+mock_renderers.Qwen3Renderer = MockQwen3Renderer
+mock_renderers.Renderer = type('Renderer', (), {})
+
+# Setup mock hyperparam utils
+mock_hparams = sys.modules['tinker_cookbook.hyperparam_utils']
+mock_hparams.get_lr = lambda model_name, rank: 1e-4
+
+# Setup mock ml_log
+mock_ml_log = sys.modules['tinker_cookbook.utils.ml_log']
+mock_ml_log.setup_logging = MagicMock(return_value=MagicMock())
+mock_ml_log.Logger = MagicMock()
