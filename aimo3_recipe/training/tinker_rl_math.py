@@ -15,6 +15,7 @@ Variable naming convention (from tinker-cookbook):
     _D: Datum dimension (training examples after flattening)
 """
 
+import json
 import logging
 import re
 import time
@@ -81,6 +82,9 @@ class MathRLConfig:
     wandb_project: Optional[str] = None
     wandb_name: Optional[str] = None
     verbose: bool = False
+
+    # Data saving options
+    save_samples: bool = False  # Save sampled responses to disk for analysis
 
 
 def extract_boxed_answer(text: str) -> Optional[str]:
@@ -189,6 +193,13 @@ def train_math_rl(config: MathRLConfig) -> None:
     logger.info(f"Starting math RL training with config: {config}")
     if config.wandb_project:
         logger.info(f"WandB logging enabled for project: {config.wandb_project}")
+
+    # Setup samples file if saving samples
+    samples_file = None
+    if config.save_samples:
+        samples_path = log_dir / "samples.jsonl"
+        samples_file = open(samples_path, "w")
+        logger.info(f"Saving samples to {samples_path}")
 
     # Load tokenizer for renderer
     from transformers import AutoTokenizer
@@ -310,17 +321,24 @@ def train_math_rl(config: MathRLConfig) -> None:
             # Collect results with progress bar
             datums_D: list[types.Datum] = []
             rewards_P: list[float] = []
+            problems_P: list[str] = []
 
-            for future, prompt, ground_truth in tqdm(
+            # Get problems for sample saving
+            for example in batch:
+                problems_P.append(example["problem"])
+
+            for idx, (future, prompt, ground_truth) in enumerate(tqdm(
                 zip(futures_P, prompts_P, ground_truths_P),
                 total=len(futures_P),
                 desc=f"Sampling batch {batch_idx + 1}",
-            ):
+            )):
                 sample_result = future.result()
+                problem = problems_P[idx]
 
                 rewards_G: list[float] = []
                 sampled_tokens_G: list[list[int]] = []
                 logprobs_G: list[list[float]] = []
+                responses_G: list[str] = []
 
                 for sequence in sample_result.sequences:
                     sampled_tokens = sequence.tokens
@@ -332,6 +350,7 @@ def train_math_rl(config: MathRLConfig) -> None:
 
                     # Decode and compute reward
                     response_text = tokenizer.decode(sampled_tokens, skip_special_tokens=True)
+                    responses_G.append(response_text)
                     reward = compute_reward(response_text, ground_truth, config)
                     rewards_G.append(reward)
 
@@ -344,6 +363,28 @@ def train_math_rl(config: MathRLConfig) -> None:
                 advantages_G = [reward - mean_reward for reward in rewards_G]
                 rewards_P.append(mean_reward)
                 total_rewards.append(mean_reward)
+
+                # Save samples to disk if enabled
+                if samples_file is not None:
+                    sample_record = {
+                        "step": step,
+                        "batch_idx": batch_idx,
+                        "problem_idx": idx,
+                        "problem": problem,
+                        "ground_truth": ground_truth,
+                        "responses": [
+                            {
+                                "text": resp,
+                                "reward": rew,
+                                "advantage": adv,
+                                "extracted_answer": extract_boxed_answer(resp),
+                            }
+                            for resp, rew, adv in zip(responses_G, rewards_G, advantages_G)
+                        ],
+                        "mean_reward": mean_reward,
+                    }
+                    samples_file.write(json.dumps(sample_record) + "\n")
+                    samples_file.flush()  # Flush to ensure data is written
 
                 # Skip if all advantages are zero (no learning signal)
                 if all(advantage == 0.0 for advantage in advantages_G):
@@ -450,6 +491,12 @@ def train_math_rl(config: MathRLConfig) -> None:
     }, step=step)
 
     ml_logger.close()
+
+    # Close samples file if open
+    if samples_file is not None:
+        samples_file.close()
+        logger.info(f"Samples saved to {log_dir / 'samples.jsonl'}")
+
     logger.info("Training completed")
 
 
