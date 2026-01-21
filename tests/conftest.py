@@ -24,6 +24,8 @@ MOCK_MODULES = [
     'vllm',
     'tinker',
     'tinker.types',
+    'tinker.types.tensor_data',
+    'tqdm',
     'chz',
     'tinker_cookbook',
     'tinker_cookbook.renderers',
@@ -39,9 +41,11 @@ for mod_name in MOCK_MODULES:
 # Setup mock renderer classes (need __init__ to accept tokenizer)
 mock_renderers = sys.modules['tinker_cookbook.renderers']
 
+
 class MockQwen3Renderer:
     def __init__(self, tokenizer):
         self.tokenizer = tokenizer
+
 
 mock_renderers.Qwen3Renderer = MockQwen3Renderer
 mock_renderers.Renderer = type('Renderer', (), {})
@@ -53,4 +57,7 @@ mock_hparams.get_lr = lambda model_name, rank: 1e-4
 # Setup mock ml_log
 mock_ml_log = sys.modules['tinker_cookbook.utils.ml_log']
 mock_ml_log.setup_logging = MagicMock(return_value=MagicMock())
-mock_ml_log.Logger = MagicMock()
+
+# Setup mock TensorData
+mock_tensor_data = sys.modules['tinker.types.tensor_data']
+mock_tensor_data.TensorData = MagicMock()

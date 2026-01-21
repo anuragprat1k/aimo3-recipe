@@ -8,27 +8,36 @@ Based on:
 - Project Numina (AIMO1): CoT + TIR pipeline
 - NemoSkills (AIMO2): Long-reasoning + solution selection
 - Tinker Cookbook patterns for RL training
+
+Variable naming convention (from tinker-cookbook):
+    _P: Problem dimension (different questions/prompts in a batch)
+    _G: Group dimension (multiple rollouts per problem)
+    _D: Datum dimension (training examples after flattening)
 """
 
-import asyncio
 import logging
-import os
 import re
-from dataclasses import dataclass, field
+import time
+from concurrent.futures import Future
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional, Any
+from typing import Optional
 
 import chz
 import tinker
-from datasets import load_dataset, Dataset
+import torch
+from datasets import load_dataset
+from tinker import types
+from tinker.types.tensor_data import TensorData
+from tqdm import tqdm
 
 # Tinker imports
 from tinker_cookbook.renderers import Qwen3Renderer, Renderer
 from tinker_cookbook.hyperparam_utils import get_lr
-from tinker_cookbook.utils.ml_log import setup_logging, Logger
-
+from tinker_cookbook.utils.ml_log import setup_logging
 
 logger = logging.getLogger(__name__)
+logging.getLogger("httpx").setLevel(logging.WARNING)
 
 
 @dataclass
@@ -69,18 +78,17 @@ class MathRLConfig:
     resume_from: Optional[str] = None
 
     # Logging options
-    wandb_project: Optional[str] = None  # Set to enable WandB logging (e.g., "aimo3-rl-math")
-    wandb_name: Optional[str] = None  # Optional run name for WandB
-    verbose: bool = False  # Enable verbose loss output every step
+    wandb_project: Optional[str] = None
+    wandb_name: Optional[str] = None
+    verbose: bool = False
 
 
 def extract_boxed_answer(text: str) -> Optional[str]:
     """Extract the answer from \\boxed{} in the response."""
-    # Handle nested braces
     pattern = r'\\boxed\{([^{}]*(?:\{[^{}]*\}[^{}]*)*)\}'
     matches = re.findall(pattern, text)
     if matches:
-        return matches[-1].strip()  # Return last boxed answer
+        return matches[-1].strip()
     return None
 
 
@@ -90,17 +98,11 @@ def normalize_math_answer(answer: str) -> str:
         return ""
 
     answer = answer.strip()
-
-    # Remove LaTeX formatting
     answer = re.sub(r'\\text\{([^}]+)\}', r'\1', answer)
     answer = re.sub(r'\\mathrm\{([^}]+)\}', r'\1', answer)
     answer = re.sub(r'\\left|\\right', '', answer)
-
-    # Normalize fractions
     answer = re.sub(r'\\frac\{(\d+)\}\{(\d+)\}', r'\1/\2', answer)
     answer = re.sub(r'\\dfrac\{(\d+)\}\{(\d+)\}', r'\1/\2', answer)
-
-    # Remove spaces and convert to lowercase for comparison
     answer = answer.replace(' ', '').lower()
 
     return answer
@@ -124,11 +126,9 @@ def compute_reward(
 
     reward = 0.0
 
-    # Format bonus for using boxed
     if extracted is not None:
         reward += config.format_bonus
 
-    # Correctness check
     if extracted is not None:
         pred_normalized = normalize_math_answer(extracted)
         gt_normalized = normalize_math_answer(gt_answer)
@@ -136,7 +136,6 @@ def compute_reward(
         if pred_normalized == gt_normalized:
             reward += config.correct_reward
         else:
-            # Try numeric comparison for floating point answers
             try:
                 pred_float = float(eval(pred_normalized))
                 gt_float = float(eval(gt_normalized))
@@ -144,7 +143,7 @@ def compute_reward(
                     reward += config.correct_reward
                 else:
                     reward += config.incorrect_reward
-            except:
+            except Exception:
                 reward += config.incorrect_reward
     else:
         reward += config.incorrect_reward
@@ -159,15 +158,13 @@ def build_config_blueprint() -> chz.Blueprint:
 
 def get_renderer(model_name: str, tokenizer) -> Renderer:
     """Get appropriate chat renderer for the model."""
-    # Use Qwen3Renderer for Qwen models, default renderer otherwise
     if "qwen" in model_name.lower():
         return Qwen3Renderer(tokenizer)
     else:
-        # Default to Qwen3 format (most common for math models)
         return Qwen3Renderer(tokenizer)
 
 
-async def train_math_rl(config: MathRLConfig) -> None:
+def train_math_rl(config: MathRLConfig) -> None:
     """
     Main RL training loop for math reasoning using Tinker.
 
@@ -177,17 +174,16 @@ async def train_math_rl(config: MathRLConfig) -> None:
     3. Calculate advantages (reward - mean_group_reward)
     4. Train on positive advantage samples
     """
-
-    # Setup logging with optional WandB integration
+    # Setup logging
     log_dir = Path(config.log_dir)
     log_dir.mkdir(parents=True, exist_ok=True)
 
-    # Initialize ml_logger (supports WandB, JSON, and console logging)
     ml_logger = setup_logging(
         log_dir=str(log_dir),
         wandb_project=config.wandb_project,
         wandb_name=config.wandb_name,
         config=config,
+        do_configure_logging_module=True,
     )
 
     logger.info(f"Starting math RL training with config: {config}")
@@ -201,6 +197,7 @@ async def train_math_rl(config: MathRLConfig) -> None:
 
     # Initialize renderer
     renderer = get_renderer(config.model_name, tokenizer)
+    logger.info(f"Using renderer: {type(renderer).__name__}")
 
     # Compute learning rate based on LoRA rank if not specified
     learning_rate = config.learning_rate
@@ -215,27 +212,41 @@ async def train_math_rl(config: MathRLConfig) -> None:
         dataset = dataset.select(range(min(config.max_samples, len(dataset))))
     logger.info(f"Dataset size: {len(dataset)}")
 
+    # Calculate number of batches
+    n_batches = (len(dataset) + config.batch_size - 1) // config.batch_size
+    logger.info(f"Training for {n_batches} batches per epoch, {config.num_epochs} epoch(s)")
+
     # Initialize Tinker client
     logger.info("Initializing Tinker service client...")
     service_client = tinker.ServiceClient()
+    logger.info("Service client initialized")
 
     # Create training client with LoRA
+    logger.info(f"Creating LoRA training client (rank={config.lora_rank})...")
     training_client = service_client.create_lora_training_client(
         base_model=config.model_name,
         rank=config.lora_rank,
     )
+    logger.info("Training client created")
 
-    # Resume from checkpoint if specified
-    step = 0
-    if config.resume_from:
-        logger.info(f"Resuming from checkpoint: {config.resume_from}")
-        training_client.load_state(config.resume_from)
-        step = int(Path(config.resume_from).stem.split("-")[-1])
+    # Sampling params for generation
+    sampling_params = types.SamplingParams(
+        max_tokens=config.max_tokens,
+        temperature=config.temperature,
+        top_p=config.top_p,
+        stop=renderer.get_stop_sequences(),
+    )
 
-    # Get sampling client for generation
-    sampling_client = training_client.save_weights_and_get_sampling_client()
+    # Adam params for optimization
+    adam_params = types.AdamParams(
+        learning_rate=learning_rate,
+        beta1=0.9,
+        beta2=0.95,
+        eps=1e-8,
+    )
 
     # Training metrics
+    step = 0
     total_rewards = []
     correct_count = 0
     total_count = 0
@@ -247,149 +258,181 @@ async def train_math_rl(config: MathRLConfig) -> None:
         # Shuffle dataset each epoch
         dataset = dataset.shuffle(seed=epoch)
 
-        # Sampling params for generation
-        sampling_params = tinker.types.SamplingParams(
-            max_tokens=config.max_tokens,
-            temperature=config.temperature,
-            top_p=config.top_p,
-            stop=renderer.get_stop_sequences(),
-        )
+        for batch_idx in range(n_batches):
+            t_start = time.time()
+            metrics: dict[str, float] = {
+                "progress/batch": batch_idx,
+                "progress/epoch": epoch,
+                "optim/lr": learning_rate,
+                "progress/done_frac": (batch_idx + 1) / n_batches,
+            }
 
-        # Adam params for optimization
-        adam_params = tinker.types.AdamParams(
-            learning_rate=learning_rate,
-            beta1=0.9,
-            beta2=0.95,
-            eps=1e-8,
-            weight_decay=0.0,
-            grad_clip_norm=1.0,
-        )
-
-        for batch_start in range(0, len(dataset), config.batch_size):
-            batch_end = min(batch_start + config.batch_size, len(dataset))
+            # Get batch
+            batch_start = batch_idx * config.batch_size
+            batch_end = min((batch_idx + 1) * config.batch_size, len(dataset))
             batch = dataset.select(range(batch_start, batch_end))
 
-            datums: list[tinker.types.Datum] = []
+            logger.info(f"Batch {batch_idx + 1}/{n_batches}: Processing {len(batch)} problems...")
 
+            # Save weights for sampling and create sampling client
+            logger.info("  Saving weights for sampler...")
+            sampling_path = training_client.save_weights_for_sampler(
+                name=f"{step:06d}"
+            ).result().path
+            sampling_client = service_client.create_sampling_client(model_path=sampling_path)
+            logger.info(f"  Sampling client created with path: {sampling_path}")
+
+            # Submit all sampling requests first (batch them for efficiency)
+            futures_P: list[Future[types.SampleResponse]] = []
+            prompts_P: list[types.ModelInput] = []
+            ground_truths_P: list[str] = []
+
+            logger.info(f"  Submitting {len(batch)} sampling requests (group_size={config.group_size})...")
             for example in batch:
                 problem = example["problem"]
                 ground_truth = example["solution"]
 
-                # Format prompt using renderer's message format
                 messages = [{"role": "user", "content": problem}]
                 prompt = renderer.build_generation_prompt(messages)
 
-                # Generate multiple solutions
-                sample_response = sampling_client.sample(
+                # Submit sampling request (non-blocking)
+                future = sampling_client.sample(
                     prompt=prompt,
                     num_samples=config.group_size,
                     sampling_params=sampling_params,
-                ).result()
+                )
+                futures_P.append(future)
+                prompts_P.append(prompt)
+                ground_truths_P.append(ground_truth)
 
-                # Compute rewards for each response
-                rewards = []
-                response_data = []
-                for sequence in sample_response.sequences:
+            logger.info(f"  All sampling requests submitted, waiting for results...")
+
+            # Collect results with progress bar
+            datums_D: list[types.Datum] = []
+            rewards_P: list[float] = []
+
+            for future, prompt, ground_truth in tqdm(
+                zip(futures_P, prompts_P, ground_truths_P),
+                total=len(futures_P),
+                desc=f"Sampling batch {batch_idx + 1}",
+            ):
+                sample_result = future.result()
+
+                rewards_G: list[float] = []
+                sampled_tokens_G: list[list[int]] = []
+                logprobs_G: list[list[float]] = []
+
+                for sequence in sample_result.sequences:
                     sampled_tokens = sequence.tokens
                     sampled_logprobs = sequence.logprobs
                     assert sampled_logprobs is not None
 
-                    # Decode tokens to text for reward computation
+                    sampled_tokens_G.append(sampled_tokens)
+                    logprobs_G.append(list(sampled_logprobs))
+
+                    # Decode and compute reward
                     response_text = tokenizer.decode(sampled_tokens, skip_special_tokens=True)
                     reward = compute_reward(response_text, ground_truth, config)
-                    rewards.append(reward)
-                    response_data.append((sampled_tokens, sampled_logprobs))
+                    rewards_G.append(reward)
 
                     # Track metrics
                     total_count += 1
-                    if reward > 0.5:  # Correct answer
+                    if reward > 0.5:
                         correct_count += 1
 
-                total_rewards.extend(rewards)
-
-                # Calculate advantages (GRPO-style reward centering)
-                mean_reward = sum(rewards) / len(rewards)
-                advantages = [r - mean_reward for r in rewards]
+                mean_reward = sum(rewards_G) / len(rewards_G)
+                advantages_G = [reward - mean_reward for reward in rewards_G]
+                rewards_P.append(mean_reward)
+                total_rewards.append(mean_reward)
 
                 # Skip if all advantages are zero (no learning signal)
-                if all(abs(a) < 1e-6 for a in advantages):
+                if all(advantage == 0.0 for advantage in advantages_G):
                     continue
 
-                # Create training datums following tinker-cookbook format
-                prompt_len = prompt.length - 1  # observation length
-                for (sampled_tokens, sampled_logprobs), advantage in zip(response_data, advantages):
-                    # Build model input: prompt + response tokens (excluding last token)
-                    model_input = prompt.append(tinker.types.EncodedTextChunk(tokens=sampled_tokens[:-1]))
+                # Create training datums
+                ob_len = prompt.length - 1
+                for sampled_tokens, logprobs, advantage in zip(
+                    sampled_tokens_G, logprobs_G, advantages_G
+                ):
+                    model_input = prompt.append(types.EncodedTextChunk(tokens=sampled_tokens[:-1]))
+                    target_tokens = [0] * ob_len + sampled_tokens
+                    padded_logprobs = [0.0] * ob_len + logprobs
+                    padded_advantages = [0.0] * ob_len + [advantage] * (model_input.length - ob_len)
 
-                    # Pad target tokens, logprobs, and advantages
-                    target_tokens = [0] * prompt_len + sampled_tokens
-                    padded_logprobs = [0.0] * prompt_len + list(sampled_logprobs)
-                    padded_advantages = [0.0] * prompt_len + [advantage] * (model_input.length - prompt_len)
+                    assert (
+                        model_input.length
+                        == len(target_tokens)
+                        == len(padded_logprobs)
+                        == len(padded_advantages)
+                    ), (
+                        f"Length mismatch: model_input={model_input.length}, "
+                        f"target_tokens={len(target_tokens)}, "
+                        f"logprobs={len(padded_logprobs)}, "
+                        f"advantages={len(padded_advantages)}"
+                    )
 
-                    assert model_input.length == len(target_tokens) == len(padded_logprobs) == len(padded_advantages)
-
-                    datum = tinker.types.Datum(
+                    datum = types.Datum(
                         model_input=model_input,
                         loss_fn_inputs={
-                            "target_tokens": tinker.TensorData(data=target_tokens, dtype="int64", shape=[len(target_tokens)]),
-                            "logprobs": tinker.TensorData(data=padded_logprobs, dtype="float32", shape=[len(padded_logprobs)]),
-                            "advantages": tinker.TensorData(data=padded_advantages, dtype="float32", shape=[len(padded_advantages)]),
+                            "target_tokens": TensorData.from_torch(torch.tensor(target_tokens)),
+                            "logprobs": TensorData.from_torch(torch.tensor(padded_logprobs)),
+                            "advantages": TensorData.from_torch(torch.tensor(padded_advantages)),
                         },
                     )
-                    datums.append(datum)
+                    datums_D.append(datum)
 
             # Skip if no datums
-            if not datums:
+            if not datums_D:
+                logger.warning(f"  No training datums for batch {batch_idx + 1}, skipping...")
                 continue
 
-            # Forward-backward pass and optimization step
-            fwd_bwd_future = training_client.forward_backward(datums, loss_fn="importance_sampling")
+            logger.info(f"  Created {len(datums_D)} training datums")
+
+            # Training step
+            logger.info("  Running forward-backward pass...")
+            fwd_bwd_future = training_client.forward_backward(datums_D, loss_fn="importance_sampling")
             optim_step_future = training_client.optim_step(adam_params)
             fwd_bwd_result = fwd_bwd_future.result()
             optim_step_future.result()
+            logger.info("  Training step complete")
 
             step += 1
 
-            # Compute metrics for logging
-            avg_reward = sum(total_rewards[-100:]) / max(len(total_rewards[-100:]), 1)
-            accuracy = correct_count / total_count if total_count > 0 else 0
+            # Compute metrics
+            avg_reward = sum(rewards_P) / len(rewards_P) if rewards_P else 0.0
+            accuracy = correct_count / total_count if total_count > 0 else 0.0
 
-            # Build metrics dictionary
-            metrics = {
-                "train/step": step,
-                "train/avg_reward": avg_reward,
-                "train/accuracy": accuracy,
-                "train/batch_datums": len(datums),
-                "train/learning_rate": learning_rate,
-            }
+            metrics["time/total"] = time.time() - t_start
+            metrics["reward/batch_mean"] = avg_reward
+            metrics["reward/running_mean"] = sum(total_rewards[-100:]) / max(len(total_rewards[-100:]), 1)
+            metrics["train/accuracy"] = accuracy
+            metrics["train/datums"] = len(datums_D)
+            metrics["train/step"] = step
 
             # Add loss metrics from forward_backward result
             if hasattr(fwd_bwd_result, 'metrics') and fwd_bwd_result.metrics:
                 for key, value in fwd_bwd_result.metrics.items():
                     metrics[f"loss/{key}"] = value
 
-            # Verbose logging every step
-            if config.verbose or step % 10 == 0:
-                logger.info(
-                    f"Step {step}: avg_reward={avg_reward:.4f}, "
-                    f"accuracy={accuracy:.2%}, "
-                    f"batch_datums={len(datums)}"
-                )
-                if config.verbose and hasattr(fwd_bwd_result, 'metrics') and fwd_bwd_result.metrics:
-                    loss_str = ", ".join(f"{k}={v:.6f}" for k, v in fwd_bwd_result.metrics.items())
-                    logger.info(f"  Loss metrics: {loss_str}")
-
-            # Log to WandB/JSON
+            # Log metrics
             ml_logger.log_metrics(metrics, step=step)
 
-            # Save checkpoint
-            if step % config.save_every == 0:
-                checkpoint_path = log_dir / f"checkpoint-{step}"
-                training_client.save_state(str(checkpoint_path))
-                logger.info(f"Saved checkpoint to {checkpoint_path}")
+            # Console logging
+            logger.info(
+                f"  Step {step}: reward={avg_reward:.4f}, "
+                f"accuracy={accuracy:.2%}, "
+                f"datums={len(datums_D)}, "
+                f"time={metrics['time/total']:.1f}s"
+            )
+            if config.verbose and hasattr(fwd_bwd_result, 'metrics') and fwd_bwd_result.metrics:
+                loss_str = ", ".join(f"{k}={v:.6f}" for k, v in fwd_bwd_result.metrics.items())
+                logger.info(f"    Loss metrics: {loss_str}")
 
-                # Update sampling client with new weights
-                sampling_client = training_client.save_weights_and_get_sampling_client()
+            # Save checkpoint
+            if config.save_every > 0 and step % config.save_every == 0:
+                checkpoint_path = log_dir / f"checkpoint-{step:06d}"
+                training_client.save_state(str(checkpoint_path))
+                logger.info(f"  Saved checkpoint to {checkpoint_path}")
 
     # Save final model
     final_path = log_dir / "final"
@@ -400,23 +443,21 @@ async def train_math_rl(config: MathRLConfig) -> None:
     final_accuracy = correct_count / total_count if total_count > 0 else 0
     logger.info(f"Final accuracy: {final_accuracy:.2%} ({correct_count}/{total_count})")
 
-    # Log final metrics
     ml_logger.log_metrics({
         "final/accuracy": final_accuracy,
         "final/correct_count": correct_count,
         "final/total_count": total_count,
     }, step=step)
 
-    # Cleanup logger (important for WandB to finish uploading)
     ml_logger.close()
+    logger.info("Training completed")
 
 
 def main():
     """CLI entry point."""
     blueprint = build_config_blueprint()
     config = blueprint.make_from_argv()
-
-    asyncio.run(train_math_rl(config))
+    train_math_rl(config)
 
 
 if __name__ == "__main__":
