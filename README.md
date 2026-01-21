@@ -133,8 +133,25 @@ python aimo3_recipe/training/tinker_rl_math.py \
 | `verbose=True` | Print loss metrics at every step |
 | `wandb_project=NAME` | Enable WandB logging to project |
 | `wandb_name=NAME` | Optional run name for WandB |
+| `save_samples=True` | Save sampled responses to `samples.jsonl` |
 
 Metrics are also saved to `{log_dir}/metrics.jsonl` for offline analysis.
+
+#### Saving Samples for Analysis
+
+Save all sampled model responses for debugging or analysis:
+
+```bash
+python aimo3_recipe/training/tinker_rl_math.py \
+    model_name=Qwen/Qwen3-8B \
+    max_samples=10 \
+    save_samples=True
+```
+
+This creates `{log_dir}/samples.jsonl` with records containing:
+- Problem text and ground truth
+- All sampled responses with rewards and advantages
+- Extracted answers for each response
 
 ### 3. Evaluation
 
