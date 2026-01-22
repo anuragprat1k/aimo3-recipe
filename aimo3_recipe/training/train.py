@@ -148,11 +148,11 @@ def run_stage3_rl(
         format_reward=config.format_reward,
     )
 
-    train_dataset, _ = load_math_datasets("rl", max_samples)
-    print(f"Train samples: {len(train_dataset)}")
+    train_dataset, eval_dataset = load_math_datasets("rl", max_samples)
+    print(f"Train samples: {len(train_dataset)}, Eval samples: {len(eval_dataset)}")
 
     trainer = RLMathTrainer(config, reward_fn)
-    trainer.train(train_dataset)
+    trainer.train(train_dataset, eval_dataset)
 
 
 def run_full_pipeline(
@@ -248,6 +248,18 @@ def main():
         action="store_true",
         help="Force CPU execution (no GPU)",
     )
+    parser.add_argument(
+        "--eval-steps",
+        type=int,
+        default=None,
+        help="Run evaluation every N steps during RL training",
+    )
+    parser.add_argument(
+        "--eval-samples",
+        type=int,
+        default=None,
+        help="Number of eval samples to use per evaluation",
+    )
 
     args = parser.parse_args()
 
@@ -264,6 +276,10 @@ def main():
         kwargs["force_cpu"] = True
         kwargs["device_map"] = "cpu"
         kwargs["torch_dtype"] = "float32"
+    if args.eval_steps is not None:
+        kwargs["eval_steps"] = args.eval_steps
+    if args.eval_samples is not None:
+        kwargs["eval_samples"] = args.eval_samples
 
     if args.stage == "full":
         run_full_pipeline(

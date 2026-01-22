@@ -10,9 +10,11 @@ Uses GRPO (Group Relative Policy Optimization) for training.
 from dataclasses import dataclass, field
 from typing import Optional, Callable
 import os
+import json
+import random
 from pathlib import Path
 import torch
-from transformers import AutoModelForCausalLM, AutoTokenizer
+from transformers import AutoModelForCausalLM, AutoTokenizer, TrainerCallback
 from peft import LoraConfig
 from datasets import Dataset
 from trl import GRPOTrainer, GRPOConfig
@@ -73,6 +75,11 @@ class RLMathConfig:
     save_samples: bool = False
     sample_save_rate: float = 0.01
     samples_filename: str = "samples.jsonl"
+
+    # Evaluation
+    eval_steps: int = 100
+    eval_samples: int = 50  # Number of eval samples to use per evaluation
+    eval_temperature: float = 0.1  # Lower temperature for more deterministic eval
 
 
 class MathRewardFunction:
@@ -144,6 +151,288 @@ class MathRewardFunction:
             rewards.append(reward)
 
         return rewards
+
+
+class SampleSavingCallback(TrainerCallback):
+    """Callback to save a sample of GRPO rollouts to disk."""
+
+    def __init__(
+        self,
+        output_path: str,
+        sample_rate: float = 0.01,
+        reward_fn: Optional[MathRewardFunction] = None,
+    ):
+        self.output_path = Path(output_path)
+        self.sample_rate = sample_rate
+        self.reward_fn = reward_fn
+        self.output_path.parent.mkdir(parents=True, exist_ok=True)
+        # Clear file at start
+        self.output_path.write_text("")
+
+    def on_log(self, args, state, control, logs=None, **kwargs):
+        """Save samples when completions are logged."""
+        if logs is None:
+            return
+
+        # TRL logs completions under various keys depending on version
+        completions = logs.get("completions") or logs.get("generated_texts")
+        if not completions:
+            return
+
+        prompts = logs.get("prompts", [])
+        rewards = logs.get("rewards", [])
+
+        # Handle case where rewards might be a tensor
+        if hasattr(rewards, "tolist"):
+            rewards = rewards.tolist()
+        elif not isinstance(rewards, list):
+            rewards = []
+
+        with open(self.output_path, "a") as f:
+            for i, completion in enumerate(completions):
+                if random.random() > self.sample_rate:
+                    continue
+
+                sample = {
+                    "step": state.global_step,
+                    "prompt": prompts[i] if i < len(prompts) else "",
+                    "completion": completion,
+                    "reward": rewards[i] if i < len(rewards) else None,
+                }
+                f.write(json.dumps(sample) + "\n")
+
+
+class SampleTrackingRewardFunction:
+    """Wrapper around reward function that tracks samples for saving."""
+
+    __name__ = "sample_tracking_reward"
+
+    def __init__(
+        self,
+        base_reward_fn: MathRewardFunction,
+        output_path: str,
+        sample_rate: float = 0.01,
+        log_to_wandb: bool = True,
+    ):
+        self.base_reward_fn = base_reward_fn
+        self.output_path = Path(output_path)
+        self.sample_rate = sample_rate
+        self.log_to_wandb = log_to_wandb
+        self.output_path.parent.mkdir(parents=True, exist_ok=True)
+        # Clear file at start
+        self.output_path.write_text("")
+        self._step = 0
+        self._wandb = None
+        if self.log_to_wandb:
+            try:
+                import wandb
+                self._wandb = wandb
+            except ImportError:
+                print("wandb not installed, skipping wandb logging for samples")
+                self.log_to_wandb = False
+
+    def __call__(
+        self,
+        prompts: list[str],
+        completions: list[str],
+        answer: list[str],
+        **kwargs,
+    ) -> list[float]:
+        """Compute rewards and save samples."""
+        rewards = self.base_reward_fn(prompts, completions, answer, **kwargs)
+
+        # Collect samples for this batch
+        samples_to_save = []
+        for i, (prompt, completion, ground_truth, reward) in enumerate(
+            zip(prompts, completions, answer, rewards)
+        ):
+            if random.random() > self.sample_rate:
+                continue
+
+            is_correct = self.base_reward_fn.answer_verifier(completion, ground_truth)
+            sample = {
+                "step": self._step,
+                "prompt": prompt,
+                "completion": completion,
+                "ground_truth": ground_truth,
+                "reward": reward,
+                "is_correct": is_correct,
+            }
+            samples_to_save.append(sample)
+
+        # Save to disk
+        if samples_to_save:
+            with open(self.output_path, "a") as f:
+                for sample in samples_to_save:
+                    f.write(json.dumps(sample) + "\n")
+
+            # Log to wandb
+            if self.log_to_wandb and self._wandb and self._wandb.run is not None:
+                # Log as a table for better visualization
+                table_data = []
+                for sample in samples_to_save:
+                    table_data.append([
+                        sample["step"],
+                        sample["prompt"][:500],  # Truncate for display
+                        sample["completion"][:2000],  # Truncate for display
+                        sample["ground_truth"],
+                        sample["reward"],
+                        sample["is_correct"],
+                    ])
+                table = self._wandb.Table(
+                    columns=["step", "prompt", "completion", "ground_truth", "reward", "is_correct"],
+                    data=table_data,
+                )
+                self._wandb.log({"samples": table, "sample_step": self._step})
+
+                # Also log aggregate metrics
+                num_correct = sum(1 for s in samples_to_save if s["is_correct"])
+                self._wandb.log({
+                    "samples/batch_accuracy": num_correct / len(samples_to_save) if samples_to_save else 0,
+                    "samples/batch_mean_reward": np.mean([s["reward"] for s in samples_to_save]),
+                    "samples/batch_size": len(samples_to_save),
+                })
+
+        self._step += 1
+        return rewards
+
+
+class EvalCallback(TrainerCallback):
+    """Callback to evaluate model accuracy on held-out problems during RL training."""
+
+    def __init__(
+        self,
+        eval_dataset: Dataset,
+        tokenizer: AutoTokenizer,
+        answer_verifier: Callable[[str, str], bool],
+        eval_steps: int = 100,
+        eval_samples: int = 50,
+        max_completion_length: int = 2048,
+        temperature: float = 0.1,
+        report_to: str = "wandb",
+    ):
+        self.eval_dataset = eval_dataset
+        self.tokenizer = tokenizer
+        self.answer_verifier = answer_verifier
+        self.eval_steps = eval_steps
+        self.eval_samples = min(eval_samples, len(eval_dataset))
+        self.max_completion_length = max_completion_length
+        self.temperature = temperature
+        self.report_to = report_to
+        self._wandb = None
+        if self.report_to == "wandb":
+            try:
+                import wandb
+                self._wandb = wandb
+            except ImportError:
+                pass
+
+    def on_step_end(self, args, state, control, model=None, **kwargs):
+        """Run evaluation every eval_steps."""
+        if state.global_step == 0 or state.global_step % self.eval_steps != 0:
+            return
+
+        if model is None:
+            return
+
+        print(f"\n[Eval] Running evaluation at step {state.global_step}...")
+        metrics = self._run_evaluation(model, state.global_step)
+
+        # Log metrics
+        if self._wandb and self._wandb.run is not None:
+            self._wandb.log(metrics, step=state.global_step)
+        else:
+            # Log to console if wandb not available
+            print(f"[Eval] Step {state.global_step}: {metrics}")
+
+    def _run_evaluation(self, model, step: int) -> dict:
+        """Generate on eval samples and compute accuracy."""
+        model.eval()
+
+        # Sample subset of eval data
+        indices = random.sample(range(len(self.eval_dataset)), self.eval_samples)
+        eval_subset = self.eval_dataset.select(indices)
+
+        correct = 0
+        total = 0
+        has_boxed = 0
+        total_length = 0
+        eval_results = []
+
+        with torch.no_grad():
+            for example in eval_subset:
+                prompt = example["prompt"]
+                ground_truth = example["answer"]
+
+                # Tokenize
+                inputs = self.tokenizer(
+                    prompt,
+                    return_tensors="pt",
+                    truncation=True,
+                    max_length=2048,
+                ).to(model.device)
+
+                # Generate
+                outputs = model.generate(
+                    **inputs,
+                    max_new_tokens=self.max_completion_length,
+                    temperature=self.temperature,
+                    top_p=0.95,
+                    do_sample=self.temperature > 0,
+                    pad_token_id=self.tokenizer.pad_token_id,
+                )
+
+                # Decode completion only (exclude prompt)
+                completion = self.tokenizer.decode(
+                    outputs[0][inputs["input_ids"].shape[1]:],
+                    skip_special_tokens=True,
+                )
+
+                # Check correctness
+                is_correct = self.answer_verifier(completion, ground_truth)
+                if is_correct:
+                    correct += 1
+                total += 1
+
+                # Track format compliance
+                if "\\boxed{" in completion:
+                    has_boxed += 1
+
+                total_length += len(completion)
+
+                eval_results.append({
+                    "prompt": prompt[:200],
+                    "completion": completion[:500],
+                    "ground_truth": ground_truth,
+                    "is_correct": is_correct,
+                })
+
+        accuracy = correct / total if total > 0 else 0
+        boxed_rate = has_boxed / total if total > 0 else 0
+        avg_length = total_length / total if total > 0 else 0
+
+        metrics = {
+            "eval/accuracy": accuracy,
+            "eval/boxed_rate": boxed_rate,
+            "eval/avg_completion_length": avg_length,
+            "eval/num_samples": total,
+            "eval/num_correct": correct,
+        }
+
+        # Log sample table to wandb
+        if self._wandb and self._wandb.run is not None and eval_results:
+            table_data = [
+                [r["prompt"], r["completion"], r["ground_truth"], r["is_correct"]]
+                for r in eval_results[:10]  # Limit to 10 for display
+            ]
+            table = self._wandb.Table(
+                columns=["prompt", "completion", "ground_truth", "is_correct"],
+                data=table_data,
+            )
+            self._wandb.log({f"eval/samples_step_{step}": table})
+
+        model.train()
+        return metrics
 
 
 class RLMathTrainer:
@@ -229,13 +518,15 @@ class RLMathTrainer:
 
         return dataset
 
-    def train(self, dataset: Dataset) -> None:
+    def train(self, dataset: Dataset, eval_dataset: Optional[Dataset] = None) -> None:
         """Run GRPO training."""
 
         if self.model is None:
             self.setup_model()
 
         dataset = self.prepare_dataset(dataset)
+        if eval_dataset is not None:
+            eval_dataset = self.prepare_dataset(eval_dataset)
 
         # Configure wandb
         self._configure_wandb()
@@ -251,6 +542,35 @@ class RLMathTrainer:
                 bias="none",
                 task_type="CAUSAL_LM",
             )
+
+        # Wrap reward function for sample saving if enabled
+        reward_fn = self.reward_fn
+        if self.config.save_samples and self.reward_fn is not None:
+            samples_path = Path(self.config.output_dir) / self.config.samples_filename
+            log_to_wandb = self.config.report_to == "wandb"
+            reward_fn = SampleTrackingRewardFunction(
+                base_reward_fn=self.reward_fn,
+                output_path=str(samples_path),
+                sample_rate=self.config.sample_save_rate,
+                log_to_wandb=log_to_wandb,
+            )
+            print(f"Sample saving enabled: {samples_path} (rate: {self.config.sample_save_rate}, wandb: {log_to_wandb})")
+
+        # Setup evaluation callback if eval dataset provided
+        callbacks = []
+        if eval_dataset is not None and self.reward_fn is not None:
+            eval_callback = EvalCallback(
+                eval_dataset=eval_dataset,
+                tokenizer=self.tokenizer,
+                answer_verifier=self.reward_fn.answer_verifier,
+                eval_steps=self.config.eval_steps,
+                eval_samples=self.config.eval_samples,
+                max_completion_length=self.config.max_completion_length,
+                temperature=self.config.eval_temperature,
+                report_to=self.config.report_to,
+            )
+            callbacks.append(eval_callback)
+            print(f"Evaluation enabled: every {self.config.eval_steps} steps on {self.config.eval_samples} samples")
 
         # GRPO configuration
         grpo_config = GRPOConfig(
@@ -275,11 +595,12 @@ class RLMathTrainer:
         # Initialize GRPO trainer
         self.trainer = GRPOTrainer(
             model=self.model,
-            reward_funcs=self.reward_fn,
+            reward_funcs=reward_fn,
             args=grpo_config,
             train_dataset=dataset,
             processing_class=self.tokenizer,
             peft_config=peft_config,
+            callbacks=callbacks if callbacks else None,
         )
 
         # Train
