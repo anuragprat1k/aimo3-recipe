@@ -260,6 +260,12 @@ def main():
         default=None,
         help="Number of eval samples to use per evaluation",
     )
+    parser.add_argument(
+        "--num-generations",
+        type=int,
+        default=None,
+        help="Number of generations per sample for GRPO (default: 4, recommended: 8-16)",
+    )
 
     args = parser.parse_args()
 
@@ -280,6 +286,8 @@ def main():
         kwargs["eval_steps"] = args.eval_steps
     if args.eval_samples is not None:
         kwargs["eval_samples"] = args.eval_samples
+    if args.num_generations is not None:
+        kwargs["num_generations"] = args.num_generations
 
     if args.stage == "full":
         run_full_pipeline(
