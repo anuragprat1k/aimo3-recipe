@@ -13,13 +13,34 @@ mkdir -p $PIP_TARGET
 echo 'export PIP_TARGET=/workspace/pip-packages' >> ~/.bashrc
 echo 'export PYTHONPATH=/workspace/pip-packages:$PYTHONPATH' >> ~/.bashrc
 
-# Install Python requirements
-echo "Installing Python requirements to /workspace/pip-packages..."
-pip install -r /workspace/aimo3-recipe/requirements-runpod.txt --target $PIP_TARGET
+# Capture existing torch version to prevent reinstallation
+TORCH_VERSION=$(python3 -c "import torch; print(torch.__version__)" 2>/dev/null || echo "none")
+CUDA_VERSION=$(python3 -c "import torch; print(torch.version.cuda)" 2>/dev/null || echo "none")
+echo "Existing PyTorch: $TORCH_VERSION (CUDA $CUDA_VERSION)"
 
-# Install Flash Attention 2 (requires special build flags)
-echo "Installing Flash Attention 2..."
-pip install flash-attn --no-build-isolation --target $PIP_TARGET
+# Install Python requirements (these are safe and won't reinstall torch)
+echo "Installing Python requirements to /workspace/pip-packages..."
+pip install transformers peft datasets wandb trl hf_transfer tensorboard --target $PIP_TARGET
+
+# Install vLLM without dependencies to avoid torch reinstall
+echo "Installing vLLM (preserving existing torch)..."
+pip install vllm --target $PIP_TARGET --no-deps
+# Install vllm's other dependencies (excluding torch)
+pip install msgspec gguf mistral_common partial_json_parser pillow compressed-tensors --target $PIP_TARGET 2>/dev/null || true
+
+# Install Flash Attention 2 without dependencies
+echo "Installing Flash Attention 2 (preserving existing torch)..."
+pip install flash-attn --no-build-isolation --no-deps --target $PIP_TARGET
+
+# Verify torch wasn't overwritten
+NEW_TORCH_VERSION=$(python3 -c "import torch; print(torch.__version__)" 2>/dev/null || echo "none")
+if [ "$TORCH_VERSION" != "$NEW_TORCH_VERSION" ]; then
+    echo "ERROR: PyTorch version changed from $TORCH_VERSION to $NEW_TORCH_VERSION!"
+    echo "The existing CUDA-enabled PyTorch may have been overwritten."
+    exit 1
+else
+    echo "PyTorch version preserved: $TORCH_VERSION"
+fi
 
 # Install GitHub CLI (gh)
 echo "Installing GitHub CLI..."
