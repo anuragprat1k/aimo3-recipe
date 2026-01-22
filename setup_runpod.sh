@@ -18,9 +18,13 @@ echo "Installing GitHub CLI..."
     && apt-get update \
     && apt-get install gh -y
 
+# Install tmux
+echo "Installing tmux..."
+apt-get install tmux -y
+
 # Install Claude Code
 echo "Installing Claude Code..."
-npm install -g @anthropic-ai/claude-code
+curl -fsSL https://claude.ai/install.sh | bash
 
 echo ""
 echo "=== Setup Complete ==="
