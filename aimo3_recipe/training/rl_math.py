@@ -283,15 +283,15 @@ class SampleTrackingRewardFunction:
                     columns=["step", "prompt", "completion", "ground_truth", "reward", "is_correct"],
                     data=table_data,
                 )
-                self._wandb.log({"samples": table, "sample_step": self._step})
 
-                # Also log aggregate metrics
+                # Use commit=False to avoid step conflicts with trainer's logging
                 num_correct = sum(1 for s in samples_to_save if s["is_correct"])
                 self._wandb.log({
+                    "samples": table,
                     "samples/batch_accuracy": num_correct / len(samples_to_save) if samples_to_save else 0,
                     "samples/batch_mean_reward": np.mean([s["reward"] for s in samples_to_save]),
                     "samples/batch_size": len(samples_to_save),
-                })
+                }, commit=False)
 
         self._step += 1
         return rewards
@@ -429,7 +429,8 @@ class EvalCallback(TrainerCallback):
                 columns=["prompt", "completion", "ground_truth", "is_correct"],
                 data=table_data,
             )
-            self._wandb.log({f"eval/samples_step_{step}": table})
+            # Use commit=False to avoid step conflicts with trainer's logging
+            self._wandb.log({f"eval/samples_step_{step}": table}, commit=False)
 
         model.train()
         return metrics
