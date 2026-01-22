@@ -266,6 +266,16 @@ def main():
         default=None,
         help="Number of generations per sample for GRPO (default: 4, recommended: 8-16)",
     )
+    parser.add_argument(
+        "--no-vllm",
+        action="store_true",
+        help="Disable vLLM for generation (vLLM is enabled by default)",
+    )
+    parser.add_argument(
+        "--no-flash-attn",
+        action="store_true",
+        help="Disable Flash Attention 2 (enabled by default)",
+    )
 
     args = parser.parse_args()
 
@@ -288,6 +298,10 @@ def main():
         kwargs["eval_samples"] = args.eval_samples
     if args.num_generations is not None:
         kwargs["num_generations"] = args.num_generations
+    if args.no_vllm:
+        kwargs["use_vllm"] = False
+    if args.no_flash_attn:
+        kwargs["use_flash_attention"] = False
 
     if args.stage == "full":
         run_full_pipeline(

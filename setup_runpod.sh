@@ -8,6 +8,10 @@ echo "=== RunPod Setup Script ==="
 echo "Installing Python requirements..."
 pip install -r /workspace/aimo3-recipe/requirements-runpod.txt
 
+# Install Flash Attention 2 (requires special build flags)
+echo "Installing Flash Attention 2..."
+pip install flash-attn --no-build-isolation
+
 # Install GitHub CLI (gh)
 echo "Installing GitHub CLI..."
 (type -p wget >/dev/null || (apt-get update && apt-get install wget -y)) \

@@ -76,6 +76,10 @@ class RLMathConfig:
     sample_save_rate: float = 0.01
     samples_filename: str = "samples.jsonl"
 
+    # vLLM (for faster generation)
+    use_vllm: bool = True
+    vllm_gpu_memory_utilization: float = 0.9
+
     # Evaluation
     eval_steps: int = 100
     eval_samples: int = 50  # Number of eval samples to use per evaluation
@@ -478,6 +482,10 @@ class RLMathTrainer:
         if not self.config.force_cpu:
             model_kwargs["device_map"] = self.config.device_map
 
+        # Use Flash Attention 2 if enabled and available
+        if self.config.use_flash_attention and not self.config.force_cpu:
+            model_kwargs["attn_implementation"] = "flash_attention_2"
+
         self.model = AutoModelForCausalLM.from_pretrained(
             self.config.model_name_or_path,
             **model_kwargs,
@@ -591,6 +599,9 @@ class RLMathTrainer:
             report_to=self.config.report_to,
             use_cpu=self.config.force_cpu,
             log_completions=True,
+            # vLLM for faster generation
+            use_vllm=self.config.use_vllm and not self.config.force_cpu,
+            vllm_gpu_memory_utilization=self.config.vllm_gpu_memory_utilization,
         )
 
         # Initialize GRPO trainer
