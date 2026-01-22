@@ -9,6 +9,8 @@ Supports both REINFORCE-style and PPO-style optimization.
 
 from dataclasses import dataclass, field
 from typing import Optional, Callable
+import json
+from pathlib import Path
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from peft import LoraConfig, get_peft_model
@@ -25,6 +27,9 @@ class RLMathConfig:
     model_name_or_path: str = "./outputs/sft_tir"
     trust_remote_code: bool = True
     use_flash_attention: bool = True
+    device_map: str = "auto"
+    torch_dtype: Optional[str] = "bfloat16"
+    force_cpu: bool = False
 
     # LoRA
     use_lora: bool = True
@@ -67,6 +72,9 @@ class RLMathConfig:
     logging_steps: int = 10
     report_to: str = "wandb"
     run_name: Optional[str] = None
+    save_samples: bool = False
+    sample_save_rate: float = 0.01
+    samples_filename: str = "samples.jsonl"
 
 
 class MathRewardFunction:
@@ -151,16 +159,25 @@ class RLMathTrainer:
         if self.tokenizer.pad_token is None:
             self.tokenizer.pad_token = self.tokenizer.eos_token
 
+        dtype = None
+        if self.config.torch_dtype:
+            dtype = getattr(torch, self.config.torch_dtype)
+
         # Load model with value head for PPO
         self.model = AutoModelForCausalLMWithValueHead.from_pretrained(
             self.config.model_name_or_path,
             trust_remote_code=self.config.trust_remote_code,
-            torch_dtype=torch.bfloat16,
-            device_map="auto",
+            torch_dtype=dtype,
+            device_map=self.config.device_map,
         )
 
-        # Apply LoRA if specified
+        # Apply LoRA if specified (wrap the base model inside the value head)
         if self.config.use_lora:
+            if getattr(self.model.pretrained_model, "peft_config", None):
+                print("PEFT adapter already present; skipping LoRA injection.")
+                self.model.is_peft_model = True
+                self.ref_model = None
+                return
             lora_config = LoraConfig(
                 r=self.config.lora_r,
                 lora_alpha=self.config.lora_alpha,
@@ -169,15 +186,18 @@ class RLMathTrainer:
                 bias="none",
                 task_type="CAUSAL_LM",
             )
-            self.model = get_peft_model(self.model, lora_config)
-
-        # Reference model (frozen copy for KL penalty)
-        self.ref_model = AutoModelForCausalLMWithValueHead.from_pretrained(
-            self.config.model_name_or_path,
-            trust_remote_code=self.config.trust_remote_code,
-            torch_dtype=torch.bfloat16,
-            device_map="auto",
-        )
+            self.model.pretrained_model = get_peft_model(self.model.pretrained_model, lora_config)
+            self.model.is_peft_model = True
+            self.model.pretrained_model.print_trainable_parameters()
+            self.ref_model = None
+        else:
+            # Reference model (frozen copy for KL penalty)
+            self.ref_model = AutoModelForCausalLMWithValueHead.from_pretrained(
+                self.config.model_name_or_path,
+                trust_remote_code=self.config.trust_remote_code,
+                torch_dtype=dtype,
+                device_map=self.config.device_map,
+            )
 
     def prepare_dataset(self, dataset: Dataset) -> Dataset:
         """
@@ -240,6 +260,8 @@ class RLMathTrainer:
         dataset = self.prepare_dataset(dataset)
 
         # PPO configuration
+        accelerator_kwargs = {"cpu": True} if self.config.force_cpu else {}
+
         ppo_config = PPOConfig(
             learning_rate=self.config.learning_rate,
             batch_size=self.config.batch_size,
@@ -250,7 +272,19 @@ class RLMathTrainer:
             init_kl_coef=self.config.init_kl_coef,
             target_kl=self.config.target_kl,
             log_with=self.config.report_to,
+            project_kwargs={"logging_dir": self.config.output_dir},
+            remove_unused_columns=False,
+            accelerator_kwargs=accelerator_kwargs,
         )
+
+        def data_collator(features: list[dict]) -> dict:
+            batch = {
+                "input_ids": [item["input_ids"] for item in features],
+                "answer": [item["answer"] for item in features],
+            }
+            if features and "query" in features[0]:
+                batch["query"] = [item["query"] for item in features]
+            return batch
 
         # Initialize PPO trainer
         self.ppo_trainer = PPOTrainer(
@@ -259,7 +293,10 @@ class RLMathTrainer:
             ref_model=self.ref_model,
             tokenizer=self.tokenizer,
             dataset=dataset,
+            data_collator=data_collator,
         )
+        # Ensure generation uses the Accelerator device (MPS/CPU)
+        self.ppo_trainer.current_device = self.ppo_trainer.accelerator.device
 
         # Generation config
         generation_kwargs = {
@@ -271,11 +308,25 @@ class RLMathTrainer:
             "eos_token_id": self.tokenizer.eos_token_id,
         }
 
+        samples_file = None
+        if self.config.save_samples:
+            output_dir = Path(self.config.output_dir)
+            output_dir.mkdir(parents=True, exist_ok=True)
+            samples_path = output_dir / self.config.samples_filename
+            samples_file = samples_path.open("w", encoding="utf-8")
+
         # Training loop
         for epoch in range(self.config.num_train_epochs):
             for batch_idx, batch in enumerate(self.ppo_trainer.dataloader):
                 query_tensors = [torch.tensor(q) for q in batch["input_ids"]]
                 ground_truths = batch["answer"]
+                if "query" in batch:
+                    queries = batch["query"]
+                else:
+                    queries = [
+                        self.tokenizer.decode(q, skip_special_tokens=True)
+                        for q in query_tensors
+                    ]
 
                 # Generate responses
                 response_tensors = self.ppo_trainer.generate(
@@ -305,12 +356,37 @@ class RLMathTrainer:
                     print(f"Epoch {epoch}, Batch {batch_idx}")
                     print(f"  Mean reward: {np.mean(rewards):.4f}")
                     print(f"  Policy loss: {stats['ppo/loss/policy']:.4f}")
+                    log_batch = {}
+                    if "query" in batch:
+                        log_batch = {"query": batch["query"], "response": responses}
+                    self.ppo_trainer.log_stats(stats, log_batch, reward_tensors)
+
+                # Save sample records for inspection
+                if samples_file is not None:
+                    for query, response, ground_truth, reward in zip(
+                        queries, responses, ground_truths, rewards
+                    ):
+                        if np.random.rand() > self.config.sample_save_rate:
+                            continue
+                        record = {
+                            "epoch": epoch,
+                            "batch_idx": batch_idx,
+                            "query": query,
+                            "response": response,
+                            "ground_truth": ground_truth,
+                            "reward": reward,
+                        }
+                        samples_file.write(json.dumps(record) + "\n")
+                    samples_file.flush()
 
                 # Save
                 if batch_idx % self.config.save_steps == 0:
                     self.ppo_trainer.save_pretrained(
                         f"{self.config.output_dir}/checkpoint-{epoch}-{batch_idx}"
                     )
+
+        if samples_file is not None:
+            samples_file.close()
 
         # Save final model
         self.ppo_trainer.save_pretrained(self.config.output_dir)

@@ -8,6 +8,7 @@ Orchestrates the multi-stage training pipeline:
 """
 
 import argparse
+import os
 from pathlib import Path
 from datasets import load_dataset, Dataset
 from aimo3_recipe.training.sft_cot import SFTCoTTrainer, SFTCoTConfig
@@ -38,11 +39,15 @@ def load_math_datasets(stage: str, max_samples: int | None = None) -> tuple[Data
 
     elif stage == "rl":
         # Use MATH dataset for RL (has cleaner answer format)
-        dataset = load_dataset("lighteval/MATH", split="train")
+        try:
+            dataset = load_dataset("lighteval/MATH-Hard", split="train")
+            dataset = dataset.rename_columns({"problem": "problem", "solution": "answer"})
+        except Exception as exc:
+            print(f"Failed to load lighteval/MATH ({exc}); falling back to NuminaMath-CoT.")
+            dataset = load_dataset("AI-MO/NuminaMath-CoT", split="train")
+            dataset = dataset.rename_columns({"solution": "answer"})
         if max_samples:
             dataset = dataset.select(range(min(max_samples, len(dataset))))
-        # Rename columns to match expected format
-        dataset = dataset.rename_columns({"problem": "problem", "solution": "answer"})
         split = dataset.train_test_split(test_size=0.01, seed=42)
         return split["train"], split["test"]
 
@@ -61,6 +66,10 @@ def run_stage1_cot(
     print("=" * 60)
     print("Stage 1: Chain-of-Thought Supervised Fine-Tuning")
     print("=" * 60)
+
+    if "report_to" not in kwargs:
+        if os.getenv("WANDB_DISABLED") or not os.getenv("WANDB_API_KEY"):
+            kwargs["report_to"] = "tensorboard"
 
     config = SFTCoTConfig(
         model_name_or_path=base_model,
@@ -92,6 +101,10 @@ def run_stage2_tir(
     print("Stage 2: Tool-Integrated Reasoning SFT")
     print("=" * 60)
 
+    if "report_to" not in kwargs:
+        if os.getenv("WANDB_DISABLED") or not os.getenv("WANDB_API_KEY"):
+            kwargs["report_to"] = "tensorboard"
+
     config = SFTTIRConfig(
         model_name_or_path=base_model,
         output_dir=output_dir,
@@ -116,6 +129,10 @@ def run_stage3_rl(
     print("=" * 60)
     print("Stage 3: RL with Correctness Rewards")
     print("=" * 60)
+
+    if "report_to" not in kwargs:
+        if os.getenv("WANDB_DISABLED") or not os.getenv("WANDB_API_KEY"):
+            kwargs["report_to"] = "tensorboard"
 
     config = RLMathConfig(
         model_name_or_path=base_model,
@@ -209,12 +226,35 @@ def main():
         default=None,
         help="Override learning rate",
     )
+    parser.add_argument(
+        "--save-samples",
+        action="store_true",
+        help="Save a sample of RL rollouts to samples.jsonl",
+    )
+    parser.add_argument(
+        "--sample-save-rate",
+        type=float,
+        default=None,
+        help="Fraction of RL samples to save (e.g., 0.01)",
+    )
+    parser.add_argument(
+        "--samples-filename",
+        type=str,
+        default=None,
+        help="Filename for saved RL samples (relative to output dir)",
+    )
 
     args = parser.parse_args()
 
     kwargs = {}
     if args.learning_rate:
         kwargs["learning_rate"] = args.learning_rate
+    if args.save_samples:
+        kwargs["save_samples"] = True
+    if args.sample_save_rate is not None:
+        kwargs["sample_save_rate"] = args.sample_save_rate
+    if args.samples_filename:
+        kwargs["samples_filename"] = args.samples_filename
 
     if args.stage == "full":
         run_full_pipeline(
