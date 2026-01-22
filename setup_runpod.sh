@@ -18,17 +18,27 @@ TORCH_VERSION=$(python3 -c "import torch; print(torch.__version__)" 2>/dev/null 
 CUDA_VERSION=$(python3 -c "import torch; print(torch.version.cuda)" 2>/dev/null || echo "none")
 echo "Existing PyTorch: $TORCH_VERSION (CUDA $CUDA_VERSION)"
 
-# Install Python requirements (these are safe and won't reinstall torch)
+# Create constraints file to prevent torch reinstallation
+CONSTRAINTS_FILE=/tmp/constraints.txt
+python3 -c "
+import torch
+print(f'torch=={torch.__version__}')
+print(f'torchvision=={__import__(\"torchvision\").__version__}' if __import__('importlib.util').util.find_spec('torchvision') else '')
+print(f'torchaudio=={__import__(\"torchaudio\").__version__}' if __import__('importlib.util').util.find_spec('torchaudio') else '')
+" > $CONSTRAINTS_FILE 2>/dev/null || echo "torch==$TORCH_VERSION" > $CONSTRAINTS_FILE
+echo "Using constraints: $(cat $CONSTRAINTS_FILE)"
+
+# Install Python requirements with constraints to prevent torch upgrade
 echo "Installing Python requirements to /workspace/pip-packages..."
-pip install transformers peft datasets wandb trl hf_transfer tensorboard --target $PIP_TARGET
+pip install transformers peft datasets wandb trl hf_transfer tensorboard \
+    --target $PIP_TARGET \
+    --constraint $CONSTRAINTS_FILE
 
-# Install vLLM without dependencies to avoid torch reinstall
+# Install vLLM with constraints
 echo "Installing vLLM (preserving existing torch)..."
-pip install vllm --target $PIP_TARGET --no-deps
-# Install vllm's other dependencies (excluding torch)
-pip install msgspec gguf mistral_common partial_json_parser pillow compressed-tensors --target $PIP_TARGET 2>/dev/null || true
+pip install vllm --target $PIP_TARGET --constraint $CONSTRAINTS_FILE
 
-# Install Flash Attention 2 without dependencies
+# Install Flash Attention 2 without dependencies (it only needs torch)
 echo "Installing Flash Attention 2 (preserving existing torch)..."
 pip install flash-attn --no-build-isolation --no-deps --target $PIP_TARGET
 
