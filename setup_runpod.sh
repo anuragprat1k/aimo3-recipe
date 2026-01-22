@@ -22,15 +22,11 @@ echo "Existing PyTorch: $TORCH_VERSION (CUDA $CUDA_VERSION)"
 echo "Installing Python requirements to /workspace/pip-packages..."
 pip install transformers peft datasets wandb trl hf_transfer tensorboard --target $PIP_TARGET
 
-# Install vLLM without dependencies to avoid torch reinstall
-echo "Installing vLLM (preserving existing torch)..."
-pip install vllm --target $PIP_TARGET --no-deps
+# Install compatible vLLM version (TRL supports 0.10.2-0.12.0)
+echo "Installing vLLM 0.12.0 (TRL compatible)..."
+pip install vllm==0.12.0 --target $PIP_TARGET --no-deps
 # Install vllm's other dependencies (excluding torch)
 pip install msgspec gguf mistral_common partial_json_parser pillow compressed-tensors --target $PIP_TARGET 2>/dev/null || true
-
-# Install Flash Attention 2 without dependencies
-echo "Installing Flash Attention 2 (preserving existing torch)..."
-pip install flash-attn --no-build-isolation --no-deps --target $PIP_TARGET
 
 # Verify torch wasn't overwritten
 NEW_TORCH_VERSION=$(python3 -c "import torch; print(torch.__version__)" 2>/dev/null || echo "none")
@@ -84,17 +80,6 @@ if torch.cuda.is_available():
 else:
     print('WARNING: CUDA not available!')
     exit(1)
-"
-
-# Check Flash Attention
-echo "Checking Flash Attention..."
-python3 -c "
-try:
-    import flash_attn
-    print(f'Flash Attention version: {flash_attn.__version__}')
-    print('Flash Attention: PASSED')
-except ImportError as e:
-    print(f'Flash Attention: NOT INSTALLED ({e})')
 "
 
 # Check vLLM

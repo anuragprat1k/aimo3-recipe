@@ -28,7 +28,7 @@ class RLMathConfig:
     # Model
     model_name_or_path: str = "./outputs/sft_tir"
     trust_remote_code: bool = True
-    use_flash_attention: bool = True
+    use_flash_attention: bool = False  # Disabled by default
     device_map: str = "auto"
     torch_dtype: Optional[str] = "bfloat16"
     force_cpu: bool = False
@@ -78,7 +78,7 @@ class RLMathConfig:
 
     # vLLM (for faster generation)
     use_vllm: bool = True
-    vllm_gpu_memory_utilization: float = 0.9
+    vllm_gpu_memory_utilization: float = 0.7  # Reduced from 0.9 to avoid OOM
 
     # Evaluation
     eval_steps: int = 100
