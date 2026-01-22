@@ -5,3 +5,4 @@ wandb
 trl
 hf_transfer
 tensorboard
+vllm
