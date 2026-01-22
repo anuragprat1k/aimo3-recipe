@@ -4,13 +4,22 @@ set -e
 
 echo "=== RunPod Setup Script ==="
 
+# Install packages to /workspace for persistence
+export PIP_TARGET=/workspace/pip-packages
+export PYTHONPATH=/workspace/pip-packages:$PYTHONPATH
+mkdir -p $PIP_TARGET
+
+# Add to bashrc for persistence
+echo 'export PIP_TARGET=/workspace/pip-packages' >> ~/.bashrc
+echo 'export PYTHONPATH=/workspace/pip-packages:$PYTHONPATH' >> ~/.bashrc
+
 # Install Python requirements
-echo "Installing Python requirements..."
-pip install -r /workspace/aimo3-recipe/requirements-runpod.txt
+echo "Installing Python requirements to /workspace/pip-packages..."
+pip install -r /workspace/aimo3-recipe/requirements-runpod.txt --target $PIP_TARGET
 
 # Install Flash Attention 2 (requires special build flags)
 echo "Installing Flash Attention 2..."
-pip install flash-attn --no-build-isolation
+pip install flash-attn --no-build-isolation --target $PIP_TARGET
 
 # Install GitHub CLI (gh)
 echo "Installing GitHub CLI..."
