@@ -26,6 +26,10 @@ apt-get install tmux -y
 echo "Installing Claude Code..."
 curl -fsSL https://claude.ai/install.sh | bash
 
+# Add local bin to PATH
+echo "Updating PATH..."
+echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc && source ~/.bashrc
+
 echo ""
 echo "=== Setup Complete ==="
 echo ""
