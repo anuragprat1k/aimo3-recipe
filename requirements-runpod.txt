@@ -1,0 +1,7 @@
+transformers
+peft
+datasets
+wandb
+trl
+hf_transfer
+tensorboard

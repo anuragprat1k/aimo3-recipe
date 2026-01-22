@@ -113,10 +113,14 @@ Then open `http://localhost:6006`.
 Sample saving:
 - Enable `save_samples=True` to write a random subset of rollouts to `output_dir/samples.jsonl`.
 - Control the fraction with `sample_save_rate` (e.g., `0.01` saves ~1%).
+- Samples are also logged to WandB as tables when `report_to=wandb`.
+
 CLI flags (RL stage):
-- `--save-samples` to enable sample saving.
+- `--save-samples` to enable sample saving (to disk and wandb).
 - `--sample-save-rate 0.01` to control the fraction saved.
 - `--samples-filename samples.jsonl` to choose the output filename.
+- `--eval-steps 100` to run evaluation every N steps.
+- `--eval-samples 50` to set number of eval samples per evaluation.
 
 #### Full local run on macOS (MPS)
 
@@ -289,6 +293,33 @@ Fine-tunes using correctness rewards (GRPO-style):
 - Learning rate: 1e-6
 - Group size: 16 rollouts per problem
 - Temperature: 0.7
+
+**Evaluation during training**:
+
+The RL stage includes periodic evaluation on held-out problems to track model progress:
+
+```bash
+# Run RL with evaluation every 50 steps on 20 samples
+python -m aimo3_recipe.training.train --stage rl \
+    --base-model Qwen/Qwen3-0.6B \
+    --max-samples 100 \
+    --save-samples \
+    --eval-steps 50 \
+    --eval-samples 20
+```
+
+Evaluation metrics logged to WandB/TensorBoard:
+- `eval/accuracy` - correctness rate on held-out problems
+- `eval/boxed_rate` - format compliance (proper \boxed{} usage)
+- `eval/avg_completion_length` - average response length
+- `eval/samples_step_N` - sample table with completions (WandB only)
+
+**Sample logging**:
+
+Enable `--save-samples` to track model generations during training:
+- Saves to `{output_dir}/samples.jsonl` with prompt, completion, reward, correctness
+- Logs sample tables to WandB for easy inspection
+- Tracks `samples/batch_accuracy` and `samples/batch_mean_reward` metrics
 
 ## Inference Strategies
 
