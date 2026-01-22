@@ -243,6 +243,11 @@ def main():
         default=None,
         help="Filename for saved RL samples (relative to output dir)",
     )
+    parser.add_argument(
+        "--force-cpu",
+        action="store_true",
+        help="Force CPU execution (no GPU)",
+    )
 
     args = parser.parse_args()
 
@@ -255,6 +260,10 @@ def main():
         kwargs["sample_save_rate"] = args.sample_save_rate
     if args.samples_filename:
         kwargs["samples_filename"] = args.samples_filename
+    if args.force_cpu:
+        kwargs["force_cpu"] = True
+        kwargs["device_map"] = "cpu"
+        kwargs["torch_dtype"] = "float32"
 
     if args.stage == "full":
         run_full_pipeline(
@@ -277,6 +286,7 @@ def main():
         )
     elif args.stage == "rl":
         run_stage3_rl(
+            base_model=args.base_model,
             output_dir=f"{args.output_dir}/rl_math",
             max_samples=args.max_samples,
             **kwargs,

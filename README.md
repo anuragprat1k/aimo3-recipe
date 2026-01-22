@@ -76,7 +76,7 @@ python -m aimo3_recipe.training.train --stage full \
 # Individual stages
 python -m aimo3_recipe.training.train --stage cot --base-model Qwen/Qwen2.5-14B
 python -m aimo3_recipe.training.train --stage tir
-python -m aimo3_recipe.training.train --stage rl
+python -m aimo3_recipe.training.train --stage rl --base-model Qwen/Qwen3-0.6B
 ```
 
 #### Local RL on macOS (MPS)

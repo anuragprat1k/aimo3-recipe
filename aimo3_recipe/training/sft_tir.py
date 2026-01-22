@@ -10,6 +10,9 @@ Based on approaches from Project Numina (AIMO1) and NemoSkills (AIMO2).
 
 from dataclasses import dataclass, field
 from typing import Optional
+from pathlib import Path
+import hashlib
+import json
 import torch
 from transformers import (
     AutoModelForCausalLM,
@@ -19,7 +22,7 @@ from transformers import (
     DataCollatorForSeq2Seq,
 )
 from peft import LoraConfig, get_peft_model, prepare_model_for_kbit_training
-from datasets import Dataset
+from datasets import Dataset, load_from_disk
 import re
 
 
@@ -69,6 +72,7 @@ class SFTTIRConfig:
     code_end_token: str = "```"
     output_start_token: str = "```output"
     max_code_executions: int = 5
+    tokenized_cache_dir: Optional[str] = "./outputs/sft_tir/tokenized_cache"
 
 
 # TIR format markers
@@ -181,6 +185,9 @@ class SFTTIRTrainer:
 
     def prepare_dataset(self, dataset: Dataset) -> Dataset:
         """Prepare TIR dataset for training."""
+        cache_path = self._get_tokenized_cache_path(dataset, purpose="tir")
+        if cache_path and cache_path.exists():
+            return load_from_disk(str(cache_path))
 
         def format_and_tokenize(examples):
             texts = []
@@ -204,7 +211,24 @@ class SFTTIRTrainer:
             remove_columns=dataset.column_names,
             desc="Tokenizing TIR dataset",
         )
+        if cache_path:
+            cache_path.parent.mkdir(parents=True, exist_ok=True)
+            dataset.save_to_disk(str(cache_path))
         return dataset
+
+    def _get_tokenized_cache_path(self, dataset: Dataset, purpose: str) -> Optional[Path]:
+        if not self.config.tokenized_cache_dir:
+            return None
+        tokenizer_id = getattr(self.tokenizer, "name_or_path", "unknown-tokenizer")
+        payload = {
+            "dataset_fingerprint": getattr(dataset, "_fingerprint", "unknown-dataset"),
+            "tokenizer": tokenizer_id,
+            "max_seq_length": self.config.max_seq_length,
+            "purpose": purpose,
+        }
+        cache_id = hashlib.sha1(json.dumps(payload, sort_keys=True).encode("utf-8")).hexdigest()[:12]
+        cache_root = Path(self.config.tokenized_cache_dir)
+        return cache_root / f"sft_tir_{cache_id}"
 
     def train(self, train_dataset: Dataset, eval_dataset: Optional[Dataset] = None) -> None:
         """Run TIR training."""

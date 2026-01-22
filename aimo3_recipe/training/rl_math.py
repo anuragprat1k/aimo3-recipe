@@ -4,18 +4,18 @@ Reinforcement Learning for Mathematical Reasoning
 This module implements RL-based training for math problem solving,
 using correctness rewards based on answer verification.
 
-Supports both REINFORCE-style and PPO-style optimization.
+Uses GRPO (Group Relative Policy Optimization) for training.
 """
 
 from dataclasses import dataclass, field
 from typing import Optional, Callable
-import json
+import os
 from pathlib import Path
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
-from peft import LoraConfig, get_peft_model
+from peft import LoraConfig
 from datasets import Dataset
-from trl import PPOTrainer, PPOConfig, AutoModelForCausalLMWithValueHead
+from trl import GRPOTrainer, GRPOConfig
 import numpy as np
 
 
@@ -40,21 +40,18 @@ class RLMathConfig:
         default_factory=lambda: ["q_proj", "k_proj", "v_proj", "o_proj"]
     )
 
-    # PPO
+    # GRPO
     output_dir: str = "./outputs/rl_math"
     learning_rate: float = 1e-6
-    batch_size: int = 64
-    mini_batch_size: int = 8
+    per_device_train_batch_size: int = 4
     gradient_accumulation_steps: int = 8
-    ppo_epochs: int = 4
+    num_generations: int = 4  # Group size for GRPO
     max_grad_norm: float = 0.5
 
     # Generation
-    max_new_tokens: int = 2048
+    max_completion_length: int = 2048
     temperature: float = 0.7
     top_p: float = 0.95
-    do_sample: bool = True
-    num_return_sequences: int = 1
 
     # Reward
     correct_reward: float = 1.0
@@ -63,8 +60,7 @@ class RLMathConfig:
     length_penalty: float = 0.0  # Optional penalty for very long responses
 
     # KL
-    init_kl_coef: float = 0.2
-    target_kl: float = 0.1
+    beta: float = 0.1  # KL penalty coefficient
 
     # Training
     num_train_epochs: int = 1
@@ -72,6 +68,8 @@ class RLMathConfig:
     logging_steps: int = 10
     report_to: str = "wandb"
     run_name: Optional[str] = None
+    wandb_project: Optional[str] = None
+    wandb_name: Optional[str] = None
     save_samples: bool = False
     sample_save_rate: float = 0.01
     samples_filename: str = "samples.jsonl"
@@ -86,6 +84,8 @@ class MathRewardFunction:
     2. Proper formatting (boxed answer)
     3. Optional length penalty
     """
+
+    __name__ = "math_correctness_reward"
 
     def __init__(
         self,
@@ -103,37 +103,54 @@ class MathRewardFunction:
 
     def __call__(
         self,
-        response: str,
-        ground_truth: str,
-    ) -> float:
-        """Compute reward for a single response."""
-        reward = 0.0
+        prompts: list[str],
+        completions: list[str],
+        answer: list[str],
+        **kwargs,
+    ) -> list[float]:
+        """
+        Compute rewards for a batch of responses.
 
-        # Check for boxed format
-        has_boxed = "\\boxed{" in response
-        if has_boxed:
-            reward += self.format_reward
+        Args:
+            prompts: List of input prompts
+            completions: List of model completions
+            answer: List of ground truth answers (from dataset)
+            **kwargs: Additional columns from dataset (ignored)
 
-        # Check answer correctness
-        is_correct = self.answer_verifier(response, ground_truth)
-        if is_correct:
-            reward += self.correct_reward
-        else:
-            reward += self.incorrect_reward
+        Returns:
+            List of reward values
+        """
+        rewards = []
+        for completion, ground_truth in zip(completions, answer):
+            reward = 0.0
 
-        # Optional length penalty
-        if self.length_penalty > 0:
-            length_factor = len(response) / 1000  # Normalize by 1000 chars
-            reward -= self.length_penalty * max(0, length_factor - 2)  # Penalize > 2k chars
+            # Check for boxed format
+            has_boxed = "\\boxed{" in completion
+            if has_boxed:
+                reward += self.format_reward
 
-        return reward
+            # Check answer correctness
+            is_correct = self.answer_verifier(completion, ground_truth)
+            if is_correct:
+                reward += self.correct_reward
+            else:
+                reward += self.incorrect_reward
+
+            # Optional length penalty
+            if self.length_penalty > 0:
+                length_factor = len(completion) / 1000  # Normalize by 1000 chars
+                reward -= self.length_penalty * max(0, length_factor - 2)  # Penalize > 2k chars
+
+            rewards.append(reward)
+
+        return rewards
 
 
 class RLMathTrainer:
     """
     Reinforcement learning trainer for math reasoning.
 
-    Uses PPO to optimize the model based on answer correctness rewards.
+    Uses GRPO to optimize the model based on answer correctness rewards.
     """
 
     def __init__(
@@ -144,12 +161,11 @@ class RLMathTrainer:
         self.config = config
         self.reward_fn = reward_fn
         self.model = None
-        self.ref_model = None
         self.tokenizer = None
-        self.ppo_trainer = None
+        self.trainer = None
 
-    def setup_model(self) -> None:
-        """Initialize model, reference model, and tokenizer."""
+    def setup_model(self) -> tuple[AutoModelForCausalLM, AutoTokenizer]:
+        """Initialize model and tokenizer."""
 
         self.tokenizer = AutoTokenizer.from_pretrained(
             self.config.model_name_or_path,
@@ -163,52 +179,36 @@ class RLMathTrainer:
         if self.config.torch_dtype:
             dtype = getattr(torch, self.config.torch_dtype)
 
-        # Load model with value head for PPO
-        self.model = AutoModelForCausalLMWithValueHead.from_pretrained(
+        model_kwargs = {
+            "trust_remote_code": self.config.trust_remote_code,
+            "torch_dtype": dtype,
+        }
+
+        # Don't use device_map with CPU to avoid offloading issues
+        if not self.config.force_cpu:
+            model_kwargs["device_map"] = self.config.device_map
+
+        self.model = AutoModelForCausalLM.from_pretrained(
             self.config.model_name_or_path,
-            trust_remote_code=self.config.trust_remote_code,
-            torch_dtype=dtype,
-            device_map=self.config.device_map,
+            **model_kwargs,
         )
 
-        # Apply LoRA if specified (wrap the base model inside the value head)
-        if self.config.use_lora:
-            if getattr(self.model.pretrained_model, "peft_config", None):
-                print("PEFT adapter already present; skipping LoRA injection.")
-                self.model.is_peft_model = True
-                self.ref_model = None
-                return
-            lora_config = LoraConfig(
-                r=self.config.lora_r,
-                lora_alpha=self.config.lora_alpha,
-                lora_dropout=self.config.lora_dropout,
-                target_modules=self.config.lora_target_modules,
-                bias="none",
-                task_type="CAUSAL_LM",
-            )
-            self.model.pretrained_model = get_peft_model(self.model.pretrained_model, lora_config)
-            self.model.is_peft_model = True
-            self.model.pretrained_model.print_trainable_parameters()
-            self.ref_model = None
-        else:
-            # Reference model (frozen copy for KL penalty)
-            self.ref_model = AutoModelForCausalLMWithValueHead.from_pretrained(
-                self.config.model_name_or_path,
-                trust_remote_code=self.config.trust_remote_code,
-                torch_dtype=dtype,
-                device_map=self.config.device_map,
-            )
+        return self.model, self.tokenizer
 
     def prepare_dataset(self, dataset: Dataset) -> Dataset:
         """
-        Prepare dataset for RL training.
+        Prepare dataset for GRPO training.
 
-        Expected format:
+        Expected input format:
         - problem: The math problem
         - answer: The ground truth answer (for reward computation)
+
+        Output format:
+        - prompt: The formatted prompt for the model
+        - answer: The ground truth answer (passed to reward function)
         """
 
-        def tokenize_prompts(examples):
+        def format_prompts(examples):
             prompts = []
             for problem in examples["problem"]:
                 messages = [{"role": "user", "content": problem}]
@@ -218,175 +218,80 @@ class RLMathTrainer:
                     add_generation_prompt=True,
                 )
                 prompts.append(prompt)
+            return {"prompt": prompts, "answer": examples["answer"]}
 
-            tokenized = self.tokenizer(
-                prompts,
-                truncation=True,
-                max_length=1024,
-                padding=False,
-                return_tensors=None,
-            )
-            tokenized["query"] = prompts
-            tokenized["answer"] = examples["answer"]
-            return tokenized
-
-        return dataset.map(
-            tokenize_prompts,
+        dataset = dataset.map(
+            format_prompts,
             batched=True,
-            desc="Preparing RL dataset",
+            desc="Preparing GRPO dataset",
+            remove_columns=[col for col in dataset.column_names if col not in ["answer"]],
         )
 
-    def compute_rewards(
-        self,
-        responses: list[str],
-        ground_truths: list[str],
-    ) -> list[float]:
-        """Compute rewards for a batch of responses."""
-        if self.reward_fn is None:
-            raise ValueError("Reward function not set")
-
-        rewards = []
-        for response, gt in zip(responses, ground_truths):
-            reward = self.reward_fn(response, gt)
-            rewards.append(reward)
-        return rewards
+        return dataset
 
     def train(self, dataset: Dataset) -> None:
-        """Run RL training loop."""
+        """Run GRPO training."""
 
         if self.model is None:
             self.setup_model()
 
         dataset = self.prepare_dataset(dataset)
 
-        # PPO configuration
-        accelerator_kwargs = {"cpu": True} if self.config.force_cpu else {}
+        # Configure wandb
+        self._configure_wandb()
 
-        ppo_config = PPOConfig(
+        # Build LoRA config if needed
+        peft_config = None
+        if self.config.use_lora:
+            peft_config = LoraConfig(
+                r=self.config.lora_r,
+                lora_alpha=self.config.lora_alpha,
+                lora_dropout=self.config.lora_dropout,
+                target_modules=self.config.lora_target_modules,
+                bias="none",
+                task_type="CAUSAL_LM",
+            )
+
+        # GRPO configuration
+        grpo_config = GRPOConfig(
+            output_dir=self.config.output_dir,
             learning_rate=self.config.learning_rate,
-            batch_size=self.config.batch_size,
-            mini_batch_size=self.config.mini_batch_size,
+            per_device_train_batch_size=self.config.per_device_train_batch_size,
             gradient_accumulation_steps=self.config.gradient_accumulation_steps,
-            ppo_epochs=self.config.ppo_epochs,
+            num_generations=self.config.num_generations,
+            max_completion_length=self.config.max_completion_length,
             max_grad_norm=self.config.max_grad_norm,
-            init_kl_coef=self.config.init_kl_coef,
-            target_kl=self.config.target_kl,
-            log_with=self.config.report_to,
-            project_kwargs={"logging_dir": self.config.output_dir},
-            remove_unused_columns=False,
-            accelerator_kwargs=accelerator_kwargs,
+            temperature=self.config.temperature,
+            top_p=self.config.top_p,
+            beta=self.config.beta,
+            num_train_epochs=self.config.num_train_epochs,
+            save_steps=self.config.save_steps,
+            logging_steps=self.config.logging_steps,
+            report_to=self.config.report_to,
+            use_cpu=self.config.force_cpu,
+            log_completions=True,
         )
 
-        def data_collator(features: list[dict]) -> dict:
-            batch = {
-                "input_ids": [item["input_ids"] for item in features],
-                "answer": [item["answer"] for item in features],
-            }
-            if features and "query" in features[0]:
-                batch["query"] = [item["query"] for item in features]
-            return batch
-
-        # Initialize PPO trainer
-        self.ppo_trainer = PPOTrainer(
-            config=ppo_config,
+        # Initialize GRPO trainer
+        self.trainer = GRPOTrainer(
             model=self.model,
-            ref_model=self.ref_model,
-            tokenizer=self.tokenizer,
-            dataset=dataset,
-            data_collator=data_collator,
+            reward_funcs=self.reward_fn,
+            args=grpo_config,
+            train_dataset=dataset,
+            processing_class=self.tokenizer,
+            peft_config=peft_config,
         )
-        # Ensure generation uses the Accelerator device (MPS/CPU)
-        self.ppo_trainer.current_device = self.ppo_trainer.accelerator.device
 
-        # Generation config
-        generation_kwargs = {
-            "max_new_tokens": self.config.max_new_tokens,
-            "temperature": self.config.temperature,
-            "top_p": self.config.top_p,
-            "do_sample": self.config.do_sample,
-            "pad_token_id": self.tokenizer.pad_token_id,
-            "eos_token_id": self.tokenizer.eos_token_id,
-        }
-
-        samples_file = None
-        if self.config.save_samples:
-            output_dir = Path(self.config.output_dir)
-            output_dir.mkdir(parents=True, exist_ok=True)
-            samples_path = output_dir / self.config.samples_filename
-            samples_file = samples_path.open("w", encoding="utf-8")
-
-        # Training loop
-        for epoch in range(self.config.num_train_epochs):
-            for batch_idx, batch in enumerate(self.ppo_trainer.dataloader):
-                query_tensors = [torch.tensor(q) for q in batch["input_ids"]]
-                ground_truths = batch["answer"]
-                if "query" in batch:
-                    queries = batch["query"]
-                else:
-                    queries = [
-                        self.tokenizer.decode(q, skip_special_tokens=True)
-                        for q in query_tensors
-                    ]
-
-                # Generate responses
-                response_tensors = self.ppo_trainer.generate(
-                    query_tensors,
-                    **generation_kwargs,
-                )
-
-                # Decode responses
-                responses = self.tokenizer.batch_decode(
-                    response_tensors,
-                    skip_special_tokens=True,
-                )
-
-                # Compute rewards
-                rewards = self.compute_rewards(responses, ground_truths)
-                reward_tensors = [torch.tensor(r) for r in rewards]
-
-                # PPO step
-                stats = self.ppo_trainer.step(
-                    query_tensors,
-                    response_tensors,
-                    reward_tensors,
-                )
-
-                # Log
-                if batch_idx % self.config.logging_steps == 0:
-                    print(f"Epoch {epoch}, Batch {batch_idx}")
-                    print(f"  Mean reward: {np.mean(rewards):.4f}")
-                    print(f"  Policy loss: {stats['ppo/loss/policy']:.4f}")
-                    log_batch = {}
-                    if "query" in batch:
-                        log_batch = {"query": batch["query"], "response": responses}
-                    self.ppo_trainer.log_stats(stats, log_batch, reward_tensors)
-
-                # Save sample records for inspection
-                if samples_file is not None:
-                    for query, response, ground_truth, reward in zip(
-                        queries, responses, ground_truths, rewards
-                    ):
-                        if np.random.rand() > self.config.sample_save_rate:
-                            continue
-                        record = {
-                            "epoch": epoch,
-                            "batch_idx": batch_idx,
-                            "query": query,
-                            "response": response,
-                            "ground_truth": ground_truth,
-                            "reward": reward,
-                        }
-                        samples_file.write(json.dumps(record) + "\n")
-                    samples_file.flush()
-
-                # Save
-                if batch_idx % self.config.save_steps == 0:
-                    self.ppo_trainer.save_pretrained(
-                        f"{self.config.output_dir}/checkpoint-{epoch}-{batch_idx}"
-                    )
-
-        if samples_file is not None:
-            samples_file.close()
+        # Train
+        self.trainer.train()
 
         # Save final model
-        self.ppo_trainer.save_pretrained(self.config.output_dir)
+        self.trainer.save_model(self.config.output_dir)
+
+    def _configure_wandb(self) -> None:
+        if self.config.report_to != "wandb":
+            return
+        if self.config.wandb_project:
+            os.environ["WANDB_PROJECT"] = self.config.wandb_project
+        if self.config.wandb_name:
+            os.environ["WANDB_RUN_NAME"] = self.config.wandb_name
