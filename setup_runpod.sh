@@ -35,6 +35,50 @@ echo "Updating PATH..."
 echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc && source ~/.bashrc
 
 echo ""
+echo "=== Verifying Installation ==="
+
+# Check PyTorch and CUDA
+echo "Checking PyTorch and CUDA..."
+python3 -c "
+import torch
+print(f'PyTorch version: {torch.__version__}')
+print(f'CUDA available: {torch.cuda.is_available()}')
+if torch.cuda.is_available():
+    print(f'CUDA version: {torch.version.cuda}')
+    print(f'GPU: {torch.cuda.get_device_name(0)}')
+    print(f'GPU memory: {torch.cuda.get_device_properties(0).total_memory / 1e9:.1f} GB')
+    # Quick tensor test
+    x = torch.randn(100, 100, device='cuda')
+    y = torch.matmul(x, x)
+    print('CUDA tensor test: PASSED')
+else:
+    print('WARNING: CUDA not available!')
+    exit(1)
+"
+
+# Check Flash Attention
+echo "Checking Flash Attention..."
+python3 -c "
+try:
+    import flash_attn
+    print(f'Flash Attention version: {flash_attn.__version__}')
+    print('Flash Attention: PASSED')
+except ImportError as e:
+    print(f'Flash Attention: NOT INSTALLED ({e})')
+"
+
+# Check vLLM
+echo "Checking vLLM..."
+python3 -c "
+try:
+    import vllm
+    print(f'vLLM version: {vllm.__version__}')
+    print('vLLM: PASSED')
+except ImportError as e:
+    print(f'vLLM: NOT INSTALLED ({e})')
+"
+
+echo ""
 echo "=== Setup Complete ==="
 echo ""
 echo "Next steps:"
