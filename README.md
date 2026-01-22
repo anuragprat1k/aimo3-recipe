@@ -79,6 +79,62 @@ python -m aimo3_recipe.training.train --stage tir
 python -m aimo3_recipe.training.train --stage rl
 ```
 
+#### Local RL on macOS (MPS)
+
+MacBooks with Apple Silicon can use the MPS backend for local RL runs. Use a small model and shorter sequences for a quick test run:
+
+```bash
+# Example: ~300 PPO steps on MPS with TensorBoard logging
+PYTORCH_ENABLE_MPS_FALLBACK=1 \
+python -u -c "from datasets import load_dataset; \
+from aimo3_recipe.training.rl_math import RLMathTrainer, RLMathConfig, MathRewardFunction; \
+from aimo3_recipe.evaluation.answer_extraction import verify_answer; \
+steps=300; batch_size=4; total=steps*batch_size; \
+ds=load_dataset('AI-MO/NuminaMath-CoT', split='train').select(range(total)); \
+ds=ds.rename_columns({'solution':'answer'}); \
+cfg=RLMathConfig(model_name_or_path='Qwen/Qwen2.5-0.5B', output_dir='./outputs/rl_math_local', \
+    batch_size=batch_size, mini_batch_size=1, gradient_accumulation_steps=1, ppo_epochs=1, \
+    max_new_tokens=256, logging_steps=1, save_steps=1000, report_to='tensorboard', \
+    use_lora=False, device_map='mps', torch_dtype='float32', save_samples=True, \
+    sample_save_rate=0.01, samples_filename='samples.jsonl'); \
+reward_fn=MathRewardFunction(answer_verifier=verify_answer, \
+    correct_reward=cfg.correct_reward, incorrect_reward=cfg.incorrect_reward, format_reward=cfg.format_reward); \
+RLMathTrainer(cfg, reward_fn).train(ds)"
+```
+
+TensorBoard:
+
+```bash
+python -m tensorboard --logdir ./outputs/rl_math_local --port 6006
+```
+
+Then open `http://localhost:6006`.
+
+Sample saving:
+- Enable `save_samples=True` to write a random subset of rollouts to `output_dir/samples.jsonl`.
+- Control the fraction with `sample_save_rate` (e.g., `0.01` saves ~1%).
+CLI flags (RL stage):
+- `--save-samples` to enable sample saving.
+- `--sample-save-rate 0.01` to control the fraction saved.
+- `--samples-filename samples.jsonl` to choose the output filename.
+
+#### Full local run on macOS (MPS)
+
+Running the full pipeline on a MacBook is possible but slow. Use a smaller base model and expect long runtimes.
+
+```bash
+# Full pipeline on MPS (CoT → TIR → RL)
+PYTORCH_ENABLE_MPS_FALLBACK=1 \
+python -m aimo3_recipe.training.train --stage full \
+    --base-model Qwen/Qwen2.5-0.5B \
+    --output-dir ./outputs
+```
+
+Notes:
+- Start with a smaller model (e.g., `Qwen/Qwen2.5-0.5B`) for feasibility.
+- Larger models may not fit or will run extremely slowly on MPS.
+- 4-bit/8-bit quantization is automatically disabled on macOS because `bitsandbytes` and CUDA are unavailable.
+
 ### 2. Remote Training with Tinker
 
 Use Tinker SDK to train on remote GPU clusters:

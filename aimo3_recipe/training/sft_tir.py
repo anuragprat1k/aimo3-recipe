@@ -106,6 +106,22 @@ class SFTTIRTrainer:
             self.tokenizer.pad_token = self.tokenizer.eos_token
 
         # Quantization config
+        if self.config.load_in_4bit:
+            import importlib.util
+            has_bnb = importlib.util.find_spec("bitsandbytes") is not None
+            has_cuda = torch.cuda.is_available()
+            if not has_bnb or not has_cuda:
+                print("bitsandbytes/CUDA not available; disabling 4-bit loading.")
+                self.config.load_in_4bit = False
+
+        # Flash attention fallback (not supported on macOS/MPS or without flash_attn)
+        if self.config.use_flash_attention:
+            import importlib.util
+            has_flash_attn = importlib.util.find_spec("flash_attn") is not None
+            if torch.backends.mps.is_available() or not has_flash_attn:
+                print("Flash Attention not available; falling back to eager attention.")
+                self.config.use_flash_attention = False
+
         bnb_config = None
         if self.config.load_in_4bit:
             from transformers import BitsAndBytesConfig
