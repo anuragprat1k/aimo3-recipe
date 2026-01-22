@@ -18,19 +18,21 @@ TORCH_VERSION=$(python3 -c "import torch; print(torch.__version__)" 2>/dev/null 
 CUDA_VERSION=$(python3 -c "import torch; print(torch.version.cuda)" 2>/dev/null || echo "none")
 echo "Existing PyTorch: $TORCH_VERSION (CUDA $CUDA_VERSION)"
 
-# Install Python requirements (these are safe and won't reinstall torch)
+# Create constraints file to prevent torch reinstallation
+CONSTRAINTS_FILE=/tmp/constraints.txt
+python3 -c "
+import torch
+print(f'torch=={torch.__version__}')
+print(f'torchvision=={__import__(\"torchvision\").__version__}' if __import__('importlib.util').util.find_spec('torchvision') else '')
+print(f'torchaudio=={__import__(\"torchaudio\").__version__}' if __import__('importlib.util').util.find_spec('torchaudio') else '')
+" > $CONSTRAINTS_FILE 2>/dev/null || echo "torch==$TORCH_VERSION" > $CONSTRAINTS_FILE
+echo "Using constraints: $(cat $CONSTRAINTS_FILE)"
+
+# Install Python requirements with constraints to prevent torch upgrade
 echo "Installing Python requirements to /workspace/pip-packages..."
-pip install transformers peft datasets wandb trl hf_transfer tensorboard --target $PIP_TARGET
-
-# Install vLLM without dependencies to avoid torch reinstall
-echo "Installing vLLM (preserving existing torch)..."
-pip install vllm --target $PIP_TARGET --no-deps
-# Install vllm's other dependencies (excluding torch)
-pip install msgspec gguf mistral_common partial_json_parser pillow compressed-tensors --target $PIP_TARGET 2>/dev/null || true
-
-# Install Flash Attention 2 without dependencies
-echo "Installing Flash Attention 2 (preserving existing torch)..."
-pip install flash-attn --no-build-isolation --no-deps --target $PIP_TARGET
+pip install transformers peft datasets wandb trl hf_transfer tensorboard \
+    --target $PIP_TARGET \
+    --constraint $CONSTRAINTS_FILE
 
 # Verify torch wasn't overwritten
 NEW_TORCH_VERSION=$(python3 -c "import torch; print(torch.__version__)" 2>/dev/null || echo "none")
@@ -86,18 +88,7 @@ else:
     exit(1)
 "
 
-# Check Flash Attention
-echo "Checking Flash Attention..."
-python3 -c "
-try:
-    import flash_attn
-    print(f'Flash Attention version: {flash_attn.__version__}')
-    print('Flash Attention: PASSED')
-except ImportError as e:
-    print(f'Flash Attention: NOT INSTALLED ({e})')
-"
-
-# Check vLLM
+# Check vLLM (pre-installed in image)
 echo "Checking vLLM..."
 python3 -c "
 try:
@@ -105,7 +96,18 @@ try:
     print(f'vLLM version: {vllm.__version__}')
     print('vLLM: PASSED')
 except ImportError as e:
-    print(f'vLLM: NOT INSTALLED ({e})')
+    print(f'vLLM: NOT AVAILABLE ({e})')
+"
+
+# Check Flash Attention (pre-installed in image)
+echo "Checking Flash Attention..."
+python3 -c "
+try:
+    import flash_attn
+    print(f'Flash Attention version: {flash_attn.__version__}')
+    print('Flash Attention: PASSED')
+except ImportError as e:
+    print(f'Flash Attention: NOT AVAILABLE ({e})')
 "
 
 echo ""
