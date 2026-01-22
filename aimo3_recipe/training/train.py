@@ -269,7 +269,7 @@ def main():
     parser.add_argument(
         "--no-vllm",
         action="store_true",
-        help="Disable vLLM for generation (vLLM is enabled by default)",
+        help="Disable vLLM for generation",
     )
     parser.add_argument(
         "--no-flash-attn",
