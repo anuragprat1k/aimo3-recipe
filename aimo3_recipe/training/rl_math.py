@@ -147,7 +147,7 @@ class MathRewardFunction:
             reward = 0.0
 
             # Check for boxed format
-            has_boxed = "\\boxed{" in completion
+            has_boxed = r"\boxed{" in completion
             if has_boxed:
                 reward += self.format_reward
 
@@ -329,7 +329,7 @@ BRIEF_FEEDBACK: <one sentence explaining the main strength or weakness>"""
         for prompt, completion, ground_truth in zip(prompts, completions, answer):
             # 1. Compute answer-based reward (same as MathRewardFunction)
             answer_reward = 0.0
-            has_boxed = "\\boxed{" in completion
+            has_boxed = r"\boxed{" in completion
             if has_boxed:
                 answer_reward += self.format_reward
 
@@ -656,7 +656,7 @@ class EvalCallback(TrainerCallback):
                     total += 1
 
                     # Track format compliance
-                    if "\\boxed{" in completion:
+                    if r"\boxed{" in completion:
                         has_boxed += 1
 
                     total_length += len(completion)
