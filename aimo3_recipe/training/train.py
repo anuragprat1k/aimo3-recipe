@@ -13,7 +13,7 @@ from pathlib import Path
 from datasets import load_dataset, Dataset
 from aimo3_recipe.training.sft_cot import SFTCoTTrainer, SFTCoTConfig
 from aimo3_recipe.training.sft_tir import SFTTIRTrainer, SFTTIRConfig
-from aimo3_recipe.training.rl_math import RLMathTrainer, RLMathConfig, MathRewardFunction
+from aimo3_recipe.training.rl_math import RLMathTrainer, RLMathConfig, MathRewardFunction, LLMJudgeRewardFunction
 from aimo3_recipe.evaluation.answer_extraction import verify_answer
 
 
@@ -140,13 +140,48 @@ def run_stage3_rl(
         **kwargs,
     )
 
-    # Reward function using answer verification
-    reward_fn = MathRewardFunction(
-        answer_verifier=verify_answer,
-        correct_reward=config.correct_reward,
-        incorrect_reward=config.incorrect_reward,
-        format_reward=config.format_reward,
-    )
+    # Create reward function based on config
+    if config.use_llm_judge:
+        print(f"Using LLM Judge reward function (weight: {config.llm_judge_weight})")
+        # Load separate judge model if specified
+        judge_model = None
+        judge_tokenizer = None
+        if config.llm_judge_model:
+            print(f"Loading separate judge model: {config.llm_judge_model}")
+            from transformers import AutoModelForCausalLM, AutoTokenizer
+            import torch
+            judge_tokenizer = AutoTokenizer.from_pretrained(config.llm_judge_model)
+            if judge_tokenizer.pad_token is None:
+                judge_tokenizer.pad_token = judge_tokenizer.eos_token
+            judge_model = AutoModelForCausalLM.from_pretrained(
+                config.llm_judge_model,
+                torch_dtype=torch.bfloat16,
+                device_map="auto",
+            )
+            judge_model.eval()
+        else:
+            print("Using policy model as judge")
+
+        reward_fn = LLMJudgeRewardFunction(
+            answer_verifier=verify_answer,
+            judge_model=judge_model,
+            judge_tokenizer=judge_tokenizer,
+            correctness_weight=config.judge_correctness_weight,
+            consistency_weight=config.judge_consistency_weight,
+            clarity_weight=config.judge_clarity_weight,
+            llm_judge_weight=config.llm_judge_weight,
+            correct_reward=config.correct_reward,
+            incorrect_reward=config.incorrect_reward,
+            format_reward=config.format_reward,
+        )
+    else:
+        # Standard reward function using answer verification
+        reward_fn = MathRewardFunction(
+            answer_verifier=verify_answer,
+            correct_reward=config.correct_reward,
+            incorrect_reward=config.incorrect_reward,
+            format_reward=config.format_reward,
+        )
 
     train_dataset, eval_dataset = load_math_datasets("rl", max_samples)
     print(f"Train samples: {len(train_dataset)}, Eval samples: {len(eval_dataset)}")
@@ -277,6 +312,25 @@ def main():
         help="Disable Flash Attention 2 (enabled by default)",
     )
 
+    # LLM Judge arguments
+    parser.add_argument(
+        "--use-llm-judge",
+        action="store_true",
+        help="Use LLM judge for process-based rewards (evaluates reasoning quality)",
+    )
+    parser.add_argument(
+        "--llm-judge-model",
+        type=str,
+        default=None,
+        help="Model to use as judge (default: use policy model)",
+    )
+    parser.add_argument(
+        "--llm-judge-weight",
+        type=float,
+        default=None,
+        help="Weight for LLM judge score vs answer correctness (0-1, default: 0.5)",
+    )
+
     args = parser.parse_args()
 
     kwargs = {}
@@ -302,6 +356,12 @@ def main():
         kwargs["use_vllm"] = False
     if args.no_flash_attn:
         kwargs["use_flash_attention"] = False
+    if args.use_llm_judge:
+        kwargs["use_llm_judge"] = True
+    if args.llm_judge_model is not None:
+        kwargs["llm_judge_model"] = args.llm_judge_model
+    if args.llm_judge_weight is not None:
+        kwargs["llm_judge_weight"] = args.llm_judge_weight
 
     if args.stage == "full":
         run_full_pipeline(
