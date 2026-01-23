@@ -570,17 +570,21 @@ class EvalCallback(TrainerCallback):
 
     def on_step_end(self, args, state, control, model=None, **kwargs):
         """Run evaluation every eval_steps."""
+        # Only run on main process in distributed training
+        if not state.is_world_process_zero:
+            return
+
         if state.global_step == 0 or state.global_step % self.eval_steps != 0:
             return
 
         if model is None:
             return
 
-        print(f"\n[Eval] Running evaluation at step {state.global_step}...")
+        print(f"\n[Eval] Running evaluation at step {state.global_step}...", flush=True)
         metrics = self._run_evaluation(model, state.global_step)
 
         # Log metrics
-        print(f"[Eval] Step {state.global_step}: {metrics}")
+        print(f"[Eval] Step {state.global_step}: {metrics}", flush=True)
         if self._wandb and self._wandb.run is not None:
             self._wandb.log(metrics, step=state.global_step)
         elif self._tb_writer is not None:
