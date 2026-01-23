@@ -531,6 +531,33 @@ class SampleTrackingRewardFunction:
         return rewards
 
 
+class MetricsLoggingCallback(TrainerCallback):
+    """Callback to print training metrics to console."""
+
+    def on_log(self, args, state, control, logs=None, **kwargs):
+        """Print metrics when trainer logs them."""
+        if not state.is_world_process_zero:
+            return
+
+        if logs is None:
+            return
+
+        # Format step info
+        step_info = f"Step {state.global_step}"
+        if "epoch" in logs:
+            step_info += f" (Epoch {logs['epoch']:.2f})"
+
+        # Filter and format metrics
+        metrics_str = ", ".join(
+            f"{k}: {v:.4f}" if isinstance(v, float) else f"{k}: {v}"
+            for k, v in sorted(logs.items())
+            if k not in ("epoch", "total_flos", "train_runtime", "train_samples_per_second", "train_steps_per_second")
+        )
+
+        if metrics_str:
+            print(f"[Train] {step_info} - {metrics_str}", flush=True)
+
+
 class EvalCallback(TrainerCallback):
     """Callback to evaluate model accuracy on held-out problems during RL training."""
 
@@ -570,17 +597,21 @@ class EvalCallback(TrainerCallback):
 
     def on_step_end(self, args, state, control, model=None, **kwargs):
         """Run evaluation every eval_steps."""
+        # Only run on main process in distributed training
+        if not state.is_world_process_zero:
+            return
+
         if state.global_step == 0 or state.global_step % self.eval_steps != 0:
             return
 
         if model is None:
             return
 
-        print(f"\n[Eval] Running evaluation at step {state.global_step}...")
+        print(f"\n[Eval] Running evaluation at step {state.global_step}...", flush=True)
         metrics = self._run_evaluation(model, state.global_step)
 
         # Log metrics
-        print(f"[Eval] Step {state.global_step}: {metrics}")
+        print(f"[Eval] Step {state.global_step}: {metrics}", flush=True)
         if self._wandb and self._wandb.run is not None:
             self._wandb.log(metrics, step=state.global_step)
         elif self._tb_writer is not None:
@@ -836,8 +867,10 @@ class RLMathTrainer:
             )
             print(f"Sample saving enabled: {samples_path} (rate: {self.config.sample_save_rate}, wandb: {log_to_wandb})")
 
-        # Setup evaluation callback if eval dataset provided
-        callbacks = []
+        # Setup callbacks
+        callbacks = [MetricsLoggingCallback()]
+
+        # Add evaluation callback if eval dataset provided
         if eval_dataset is not None and self.reward_fn is not None:
             eval_callback = EvalCallback(
                 eval_dataset=eval_dataset,
@@ -869,6 +902,7 @@ class RLMathTrainer:
             num_train_epochs=self.config.num_train_epochs,
             save_steps=self.config.save_steps,
             logging_steps=self.config.logging_steps,
+            logging_strategy="steps",
             report_to=self.config.report_to,
             use_cpu=self.config.force_cpu,
             log_completions=True,
