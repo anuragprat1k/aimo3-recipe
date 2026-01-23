@@ -261,6 +261,12 @@ def main():
         help="Number of eval samples to use per evaluation",
     )
     parser.add_argument(
+        "--eval-batch-size",
+        type=int,
+        default=None,
+        help="Batch size for evaluation (higher = faster, default: 8)",
+    )
+    parser.add_argument(
         "--num-generations",
         type=int,
         default=None,
@@ -296,6 +302,8 @@ def main():
         kwargs["eval_steps"] = args.eval_steps
     if args.eval_samples is not None:
         kwargs["eval_samples"] = args.eval_samples
+    if args.eval_batch_size is not None:
+        kwargs["eval_batch_size"] = args.eval_batch_size
     if args.num_generations is not None:
         kwargs["num_generations"] = args.num_generations
     if args.no_vllm:
