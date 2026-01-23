@@ -76,7 +76,7 @@ class RLMathConfig:
     num_train_epochs: int = 1
     save_steps: int = 100
     logging_steps: int = 10
-    report_to: str = "wandb"
+    report_to: str = "tensorboard"
     run_name: Optional[str] = None
     wandb_project: Optional[str] = None
     wandb_name: Optional[str] = None

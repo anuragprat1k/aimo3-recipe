@@ -312,6 +312,14 @@ def main():
         help="Disable Flash Attention 2 (enabled by default)",
     )
 
+    parser.add_argument(
+        "--report-to",
+        type=str,
+        choices=["tensorboard", "wandb", "none"],
+        default=None,
+        help="Where to report metrics (default: tensorboard)",
+    )
+
     # LLM Judge arguments
     parser.add_argument(
         "--use-llm-judge",
@@ -362,6 +370,8 @@ def main():
         kwargs["llm_judge_model"] = args.llm_judge_model
     if args.llm_judge_weight is not None:
         kwargs["llm_judge_weight"] = args.llm_judge_weight
+    if args.report_to is not None:
+        kwargs["report_to"] = args.report_to
 
     if args.stage == "full":
         run_full_pipeline(
