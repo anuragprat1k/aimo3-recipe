@@ -331,6 +331,12 @@ def main():
         default=None,
         help="Log training metrics every N steps (default: 5)",
     )
+    parser.add_argument(
+        "--run-name",
+        type=str,
+        default="rl_math_grpo",
+        help="Name for the training run (useful for distinguishing runs, default: rl_math_grpo)",
+    )
 
     # LLM Judge arguments
     parser.add_argument(
@@ -388,6 +394,8 @@ def main():
         kwargs["report_to"] = args.report_to
     if args.logging_steps is not None:
         kwargs["logging_steps"] = args.logging_steps
+    if args.run_name is not None:
+        kwargs["run_name"] = args.run_name
 
     if args.stage == "full":
         run_full_pipeline(
