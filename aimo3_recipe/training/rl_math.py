@@ -531,6 +531,33 @@ class SampleTrackingRewardFunction:
         return rewards
 
 
+class MetricsLoggingCallback(TrainerCallback):
+    """Callback to print training metrics to console."""
+
+    def on_log(self, args, state, control, logs=None, **kwargs):
+        """Print metrics when trainer logs them."""
+        if not state.is_world_process_zero:
+            return
+
+        if logs is None:
+            return
+
+        # Format step info
+        step_info = f"Step {state.global_step}"
+        if "epoch" in logs:
+            step_info += f" (Epoch {logs['epoch']:.2f})"
+
+        # Filter and format metrics
+        metrics_str = ", ".join(
+            f"{k}: {v:.4f}" if isinstance(v, float) else f"{k}: {v}"
+            for k, v in sorted(logs.items())
+            if k not in ("epoch", "total_flos", "train_runtime", "train_samples_per_second", "train_steps_per_second")
+        )
+
+        if metrics_str:
+            print(f"[Train] {step_info} - {metrics_str}", flush=True)
+
+
 class EvalCallback(TrainerCallback):
     """Callback to evaluate model accuracy on held-out problems during RL training."""
 
@@ -840,8 +867,10 @@ class RLMathTrainer:
             )
             print(f"Sample saving enabled: {samples_path} (rate: {self.config.sample_save_rate}, wandb: {log_to_wandb})")
 
-        # Setup evaluation callback if eval dataset provided
-        callbacks = []
+        # Setup callbacks
+        callbacks = [MetricsLoggingCallback()]
+
+        # Add evaluation callback if eval dataset provided
         if eval_dataset is not None and self.reward_fn is not None:
             eval_callback = EvalCallback(
                 eval_dataset=eval_dataset,
@@ -873,6 +902,7 @@ class RLMathTrainer:
             num_train_epochs=self.config.num_train_epochs,
             save_steps=self.config.save_steps,
             logging_steps=self.config.logging_steps,
+            logging_strategy="steps",
             report_to=self.config.report_to,
             use_cpu=self.config.force_cpu,
             log_completions=True,
