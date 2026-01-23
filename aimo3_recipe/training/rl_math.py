@@ -62,6 +62,14 @@ class RLMathConfig:
     format_reward: float = 0.1  # Bonus for proper \\boxed{} format
     length_penalty: float = 0.0  # Optional penalty for very long responses
 
+    # LLM Judge (optional - for process-based rewards)
+    use_llm_judge: bool = False
+    llm_judge_model: Optional[str] = None  # None = use policy model as judge
+    llm_judge_weight: float = 0.5  # Weight for judge score vs correctness
+    judge_correctness_weight: float = 0.4
+    judge_consistency_weight: float = 0.4
+    judge_clarity_weight: float = 0.2
+
     # KL
     beta: float = 0.1  # KL penalty coefficient
 
@@ -69,7 +77,7 @@ class RLMathConfig:
     num_train_epochs: int = 1
     save_steps: int = 100
     logging_steps: int = 10
-    report_to: str = "wandb"
+    report_to: str = "tensorboard"
     run_name: Optional[str] = None
     wandb_project: Optional[str] = None
     wandb_name: Optional[str] = None
@@ -156,6 +164,225 @@ class MathRewardFunction:
                 reward -= self.length_penalty * max(0, length_factor - 2)  # Penalize > 2k chars
 
             rewards.append(reward)
+
+        return rewards
+
+
+class LLMJudgeRewardFunction:
+    """
+    LLM-based reward function that evaluates solution quality step-by-step.
+
+    Evaluates:
+    1. Logical consistency between steps
+    2. Mathematical correctness of operations
+    3. Clarity and neatness of presentation
+
+    Can use either a separate judge model or the policy model itself.
+    """
+
+    __name__ = "llm_judge_reward"
+
+    def __init__(
+        self,
+        answer_verifier: Callable[[str, str], bool],
+        judge_model: Optional[AutoModelForCausalLM] = None,
+        judge_tokenizer: Optional[AutoTokenizer] = None,
+        correctness_weight: float = 0.4,
+        consistency_weight: float = 0.4,
+        clarity_weight: float = 0.2,
+        llm_judge_weight: float = 0.5,
+        correct_reward: float = 1.0,
+        incorrect_reward: float = -0.5,
+        format_reward: float = 0.1,
+    ):
+        """
+        Initialize LLM Judge reward function.
+
+        Args:
+            answer_verifier: Function to verify final answer correctness
+            judge_model: Model to use as judge (None = will use policy model)
+            judge_tokenizer: Tokenizer for judge model
+            correctness_weight: Weight for mathematical correctness score
+            consistency_weight: Weight for logical consistency score
+            clarity_weight: Weight for clarity/neatness score
+            llm_judge_weight: Weight for LLM judge vs answer correctness (0-1)
+            correct_reward: Reward for correct final answer
+            incorrect_reward: Reward for incorrect final answer
+            format_reward: Bonus for proper \\boxed{} format
+        """
+        self.answer_verifier = answer_verifier
+        self.judge_model = judge_model
+        self.judge_tokenizer = judge_tokenizer
+        self.correctness_weight = correctness_weight
+        self.consistency_weight = consistency_weight
+        self.clarity_weight = clarity_weight
+        self.llm_judge_weight = llm_judge_weight
+        self.correct_reward = correct_reward
+        self.incorrect_reward = incorrect_reward
+        self.format_reward = format_reward
+        self._policy_model = None  # Set by trainer if using policy as judge
+
+    def set_policy_model(self, model: AutoModelForCausalLM, tokenizer: AutoTokenizer):
+        """Set the policy model to use as judge (called by trainer)."""
+        self._policy_model = model
+        if self.judge_tokenizer is None:
+            self.judge_tokenizer = tokenizer
+
+    def _get_judge_model(self):
+        """Get the model to use for judging."""
+        if self.judge_model is not None:
+            return self.judge_model
+        if self._policy_model is not None:
+            return self._policy_model
+        raise ValueError("No judge model available. Either provide judge_model or call set_policy_model().")
+
+    def _build_judge_prompt(self, problem: str, solution: str) -> str:
+        """Build the prompt for the LLM judge."""
+        return f"""You are a mathematics teacher evaluating a student's solution. Analyze the solution step-by-step and rate it on three criteria.
+
+## Problem
+{problem}
+
+## Student's Solution
+{solution}
+
+## Evaluation Criteria
+Rate each criterion from 0 to 10:
+
+1. **LOGICAL_CONSISTENCY**: Are the reasoning steps logically connected? Does each step follow from the previous? Is the overall argument structure sound?
+
+2. **MATHEMATICAL_CORRECTNESS**: Are the calculations accurate? Are the mathematical operations and transformations valid? Are formulas applied correctly?
+
+3. **CLARITY**: Is the solution well-organized? Are steps clearly explained? Is it easy to follow the reasoning?
+
+## Your Response
+Provide your scores in exactly this format:
+LOGICAL_CONSISTENCY: <score>
+MATHEMATICAL_CORRECTNESS: <score>
+CLARITY: <score>
+BRIEF_FEEDBACK: <one sentence explaining the main strength or weakness>"""
+
+    def _parse_judge_response(self, response: str) -> dict[str, float]:
+        """Parse scores from judge response."""
+        scores = {
+            "consistency": 5.0,
+            "correctness": 5.0,
+            "clarity": 5.0,
+        }
+
+        for line in response.split("\n"):
+            line = line.strip()
+            try:
+                if line.startswith("LOGICAL_CONSISTENCY:"):
+                    score_str = line.split(":")[1].strip().split()[0]
+                    scores["consistency"] = min(10.0, max(0.0, float(score_str)))
+                elif line.startswith("MATHEMATICAL_CORRECTNESS:"):
+                    score_str = line.split(":")[1].strip().split()[0]
+                    scores["correctness"] = min(10.0, max(0.0, float(score_str)))
+                elif line.startswith("CLARITY:"):
+                    score_str = line.split(":")[1].strip().split()[0]
+                    scores["clarity"] = min(10.0, max(0.0, float(score_str)))
+            except (IndexError, ValueError):
+                continue
+
+        return scores
+
+    def _extract_problem_from_prompt(self, prompt: str) -> str:
+        """Extract the problem text from a chat-formatted prompt."""
+        # Try to extract content after common patterns
+        markers = ["<|user|>", "[INST]", "Problem:", "Question:", "<|im_start|>user"]
+        for marker in markers:
+            if marker in prompt:
+                parts = prompt.split(marker)
+                if len(parts) > 1:
+                    # Get content after marker, before any assistant marker
+                    content = parts[-1]
+                    for end_marker in ["<|assistant|>", "[/INST]", "<|im_end|>", "<|im_start|>assistant"]:
+                        if end_marker in content:
+                            content = content.split(end_marker)[0]
+                    return content.strip()
+        return prompt  # Return as-is if no markers found
+
+    @torch.no_grad()
+    def __call__(
+        self,
+        prompts: list[str],
+        completions: list[str],
+        answer: list[str],
+        **kwargs,
+    ) -> list[float]:
+        """
+        Compute rewards combining LLM judge scores with answer correctness.
+
+        Args:
+            prompts: List of input prompts
+            completions: List of model completions
+            answer: List of ground truth answers
+
+        Returns:
+            List of reward values
+        """
+        rewards = []
+        judge_model = self._get_judge_model()
+        judge_model.eval()
+
+        for prompt, completion, ground_truth in zip(prompts, completions, answer):
+            # 1. Compute answer-based reward (same as MathRewardFunction)
+            answer_reward = 0.0
+            has_boxed = "\\boxed{" in completion
+            if has_boxed:
+                answer_reward += self.format_reward
+
+            is_correct = self.answer_verifier(completion, ground_truth)
+            if is_correct:
+                answer_reward += self.correct_reward
+            else:
+                answer_reward += self.incorrect_reward
+
+            # 2. Compute LLM judge reward
+            problem = self._extract_problem_from_prompt(prompt)
+            judge_prompt = self._build_judge_prompt(problem, completion)
+
+            inputs = self.judge_tokenizer(
+                judge_prompt,
+                return_tensors="pt",
+                truncation=True,
+                max_length=4096,
+            ).to(judge_model.device)
+
+            outputs = judge_model.generate(
+                **inputs,
+                max_new_tokens=150,
+                temperature=0.1,
+                do_sample=False,
+                pad_token_id=self.judge_tokenizer.pad_token_id,
+            )
+
+            response = self.judge_tokenizer.decode(
+                outputs[0][inputs["input_ids"].shape[1]:],
+                skip_special_tokens=True,
+            )
+
+            scores = self._parse_judge_response(response)
+
+            # Weighted combination of judge scores (0-1 scale)
+            judge_score = (
+                self.correctness_weight * (scores["correctness"] / 10) +
+                self.consistency_weight * (scores["consistency"] / 10) +
+                self.clarity_weight * (scores["clarity"] / 10)
+            )
+
+            # Scale judge score to similar range as answer reward
+            # Judge score is 0-1, scale to roughly -0.5 to 1.0
+            judge_reward = (judge_score * 1.5) - 0.5
+
+            # 3. Combine answer reward and judge reward
+            final_reward = (
+                (1 - self.llm_judge_weight) * answer_reward +
+                self.llm_judge_weight * judge_reward
+            )
+
+            rewards.append(final_reward)
 
         return rewards
 
@@ -560,6 +787,15 @@ class RLMathTrainer:
 
         if self.model is None:
             self.setup_model()
+
+        # If using LLM judge, set up the judge model reference
+        if isinstance(self.reward_fn, LLMJudgeRewardFunction):
+            if self.reward_fn.judge_model is None:
+                # Use policy model as judge
+                print("LLM Judge: Using policy model as judge")
+                self.reward_fn.set_policy_model(self.model, self.tokenizer)
+            else:
+                print(f"LLM Judge: Using separate judge model")
 
         dataset = self.prepare_dataset(dataset)
         if eval_dataset is not None:
