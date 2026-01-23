@@ -78,7 +78,8 @@ class RLMathConfig:
 
     # vLLM (for faster generation)
     use_vllm: bool = True
-    vllm_gpu_memory_utilization: float = 0.7  # Reduced from 0.9 to avoid OOM
+    vllm_mode: str = "colocate"  # "colocate" runs in-process, "server" requires separate vLLM server
+    vllm_gpu_memory_utilization: float = 0.5  # GPU memory for vLLM when colocated
 
     # Evaluation
     eval_steps: int = 100
@@ -601,6 +602,7 @@ class RLMathTrainer:
             log_completions=True,
             # vLLM for faster generation
             use_vllm=self.config.use_vllm and not self.config.force_cpu,
+            vllm_mode=self.config.vllm_mode,
             vllm_gpu_memory_utilization=self.config.vllm_gpu_memory_utilization,
         )
 

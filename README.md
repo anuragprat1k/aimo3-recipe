@@ -55,6 +55,23 @@ pip install git+https://github.com/thinking-machines-lab/tinker-cookbook.git
 pip install -e ".[dev]"
 ```
 
+### Local RL Training Setup (without Tinker)
+
+If you only need local RL training and don't have access to the Tinker package, install the core dependencies manually:
+
+```bash
+# Install core dependencies for local RL training
+pip install transformers peft datasets trl accelerate wandb tensorboard
+
+# Install vLLM for faster generation (requires CUDA)
+pip install vllm==0.12.0
+
+# Verify the installation
+python -c "from aimo3_recipe.training.rl_math import RLMathTrainer; print('Setup OK')"
+```
+
+**Note:** vLLM 0.12.0 is recommended for compatibility with TRL. The training uses vLLM in "colocate" mode by default, which runs vLLM in-process without needing a separate server.
+
 ### Requirements
 
 - Python 3.10+
