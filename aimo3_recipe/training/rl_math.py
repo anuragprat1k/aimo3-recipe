@@ -545,6 +545,7 @@ class EvalCallback(TrainerCallback):
         temperature: float = 0.1,
         report_to: str = "wandb",
         eval_batch_size: int = 8,
+        output_dir: str = None,
     ):
         self.eval_dataset = eval_dataset
         self.tokenizer = tokenizer
@@ -556,12 +557,16 @@ class EvalCallback(TrainerCallback):
         self.report_to = report_to
         self.eval_batch_size = eval_batch_size
         self._wandb = None
+        self._tb_writer = None
         if self.report_to == "wandb":
             try:
                 import wandb
                 self._wandb = wandb
             except ImportError:
                 pass
+        elif self.report_to == "tensorboard" and output_dir:
+            from torch.utils.tensorboard import SummaryWriter
+            self._tb_writer = SummaryWriter(log_dir=output_dir)
 
     def on_step_end(self, args, state, control, model=None, **kwargs):
         """Run evaluation every eval_steps."""
@@ -575,11 +580,13 @@ class EvalCallback(TrainerCallback):
         metrics = self._run_evaluation(model, state.global_step)
 
         # Log metrics
+        print(f"[Eval] Step {state.global_step}: {metrics}")
         if self._wandb and self._wandb.run is not None:
             self._wandb.log(metrics, step=state.global_step)
-        else:
-            # Log to console if wandb not available
-            print(f"[Eval] Step {state.global_step}: {metrics}")
+        elif self._tb_writer is not None:
+            for key, value in metrics.items():
+                self._tb_writer.add_scalar(key, value, state.global_step)
+            self._tb_writer.flush()
 
     def _run_evaluation(self, model, step: int) -> dict:
         """Generate on eval samples and compute accuracy using batched generation."""
@@ -842,6 +849,7 @@ class RLMathTrainer:
                 temperature=self.config.eval_temperature,
                 report_to=self.config.report_to,
                 eval_batch_size=self.config.eval_batch_size,
+                output_dir=self.config.output_dir,
             )
             callbacks.append(eval_callback)
             print(f"Evaluation enabled: every {self.config.eval_steps} steps on {self.config.eval_samples} samples")
