@@ -479,8 +479,10 @@ class RLMathTrainer:
             "torch_dtype": dtype,
         }
 
-        # Don't use device_map with CPU to avoid offloading issues
-        if not self.config.force_cpu:
+        # Don't use device_map with CPU or in distributed mode
+        # Distributed training (accelerate/torchrun) handles device placement
+        is_distributed = int(os.environ.get("WORLD_SIZE", 1)) > 1
+        if not self.config.force_cpu and not is_distributed:
             model_kwargs["device_map"] = self.config.device_map
 
         # Use Flash Attention 2 if enabled and available

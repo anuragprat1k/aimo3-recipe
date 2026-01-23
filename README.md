@@ -96,6 +96,33 @@ python -m aimo3_recipe.training.train --stage tir
 python -m aimo3_recipe.training.train --stage rl --base-model Qwen/Qwen3-0.6B
 ```
 
+#### Multi-GPU Training
+
+For distributed training across multiple GPUs, use `accelerate launch`. The code automatically detects distributed mode and configures device placement accordingly:
+
+```bash
+# Multi-GPU RL training (disable vLLM colocate mode for distributed)
+accelerate launch -m aimo3_recipe.training.train --stage rl \
+    --base-model Qwen/Qwen3-8B \
+    --output-dir ./outputs/rl_math \
+    --num-generations 16 \
+    --eval-steps 20 \
+    --no-vllm
+
+# With WandB logging
+WANDB_API_KEY=your_key WANDB_PROJECT=aimo3-rl-math \
+accelerate launch -m aimo3_recipe.training.train --stage rl \
+    --base-model Qwen/Qwen3-8B \
+    --output-dir ./outputs/rl_math \
+    --num-generations 16 \
+    --eval-steps 20 \
+    --save-samples \
+    --sample-save-rate 0.05 \
+    --no-vllm
+```
+
+**Note:** vLLM colocate mode (`--no-vllm` flag) must be disabled for multi-GPU training as it's incompatible with distributed execution.
+
 #### Local RL on macOS (MPS)
 
 MacBooks with Apple Silicon can use the MPS backend for local RL runs. Use a small model and shorter sequences for a quick test run:
