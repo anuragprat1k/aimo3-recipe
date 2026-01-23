@@ -19,6 +19,7 @@ from peft import LoraConfig
 from datasets import Dataset
 from trl import GRPOTrainer, GRPOConfig
 import numpy as np
+from tqdm import tqdm
 
 
 @dataclass
@@ -85,6 +86,7 @@ class RLMathConfig:
     eval_steps: int = 100
     eval_samples: int = 50  # Number of eval samples to use per evaluation
     eval_temperature: float = 0.1  # Lower temperature for more deterministic eval
+    eval_batch_size: int = 8  # Batch size for evaluation (higher = faster)
 
 
 class MathRewardFunction:
@@ -315,6 +317,7 @@ class EvalCallback(TrainerCallback):
         max_completion_length: int = 2048,
         temperature: float = 0.1,
         report_to: str = "wandb",
+        eval_batch_size: int = 8,
     ):
         self.eval_dataset = eval_dataset
         self.tokenizer = tokenizer
@@ -324,6 +327,7 @@ class EvalCallback(TrainerCallback):
         self.max_completion_length = max_completion_length
         self.temperature = temperature
         self.report_to = report_to
+        self.eval_batch_size = eval_batch_size
         self._wandb = None
         if self.report_to == "wandb":
             try:
@@ -351,7 +355,7 @@ class EvalCallback(TrainerCallback):
             print(f"[Eval] Step {state.global_step}: {metrics}")
 
     def _run_evaluation(self, model, step: int) -> dict:
-        """Generate on eval samples and compute accuracy."""
+        """Generate on eval samples and compute accuracy using batched generation."""
         model.eval()
 
         # Sample subset of eval data
@@ -364,20 +368,34 @@ class EvalCallback(TrainerCallback):
         total_length = 0
         eval_results = []
 
-        with torch.no_grad():
-            for example in eval_subset:
-                prompt = example["prompt"]
-                ground_truth = example["answer"]
+        # Collect all prompts and ground truths
+        all_prompts = [ex["prompt"] for ex in eval_subset]
+        all_ground_truths = [ex["answer"] for ex in eval_subset]
 
-                # Tokenize
+        # Process in batches
+        num_batches = (len(all_prompts) + self.eval_batch_size - 1) // self.eval_batch_size
+
+        # Save original padding side for restoration
+        original_padding_side = self.tokenizer.padding_side
+        self.tokenizer.padding_side = "left"  # Left-pad for batched generation
+
+        with torch.no_grad():
+            for batch_idx in tqdm(range(num_batches), desc="Evaluating", leave=False):
+                start_idx = batch_idx * self.eval_batch_size
+                end_idx = min(start_idx + self.eval_batch_size, len(all_prompts))
+                batch_prompts = all_prompts[start_idx:end_idx]
+                batch_ground_truths = all_ground_truths[start_idx:end_idx]
+
+                # Tokenize batch
                 inputs = self.tokenizer(
-                    prompt,
+                    batch_prompts,
                     return_tensors="pt",
                     truncation=True,
                     max_length=2048,
+                    padding=True,
                 ).to(model.device)
 
-                # Generate
+                # Generate for entire batch
                 outputs = model.generate(
                     **inputs,
                     max_new_tokens=self.max_completion_length,
@@ -387,30 +405,37 @@ class EvalCallback(TrainerCallback):
                     pad_token_id=self.tokenizer.pad_token_id,
                 )
 
-                # Decode completion only (exclude prompt)
-                completion = self.tokenizer.decode(
-                    outputs[0][inputs["input_ids"].shape[1]:],
-                    skip_special_tokens=True,
-                )
+                # Decode completions (exclude prompt tokens)
+                prompt_lengths = inputs["attention_mask"].sum(dim=1)
+                for i, (output, prompt_len, prompt, ground_truth) in enumerate(
+                    zip(outputs, prompt_lengths, batch_prompts, batch_ground_truths)
+                ):
+                    completion = self.tokenizer.decode(
+                        output[prompt_len:],
+                        skip_special_tokens=True,
+                    )
 
-                # Check correctness
-                is_correct = self.answer_verifier(completion, ground_truth)
-                if is_correct:
-                    correct += 1
-                total += 1
+                    # Check correctness
+                    is_correct = self.answer_verifier(completion, ground_truth)
+                    if is_correct:
+                        correct += 1
+                    total += 1
 
-                # Track format compliance
-                if "\\boxed{" in completion:
-                    has_boxed += 1
+                    # Track format compliance
+                    if "\\boxed{" in completion:
+                        has_boxed += 1
 
-                total_length += len(completion)
+                    total_length += len(completion)
 
-                eval_results.append({
-                    "prompt": prompt[:200],
-                    "completion": completion[:500],
-                    "ground_truth": ground_truth,
-                    "is_correct": is_correct,
-                })
+                    eval_results.append({
+                        "prompt": prompt[:200],
+                        "completion": completion[:500],
+                        "ground_truth": ground_truth,
+                        "is_correct": is_correct,
+                    })
+
+        # Restore original padding side
+        self.tokenizer.padding_side = original_padding_side
 
         accuracy = correct / total if total > 0 else 0
         boxed_rate = has_boxed / total if total > 0 else 0
@@ -578,6 +603,7 @@ class RLMathTrainer:
                 max_completion_length=self.config.max_completion_length,
                 temperature=self.config.eval_temperature,
                 report_to=self.config.report_to,
+                eval_batch_size=self.config.eval_batch_size,
             )
             callbacks.append(eval_callback)
             print(f"Evaluation enabled: every {self.config.eval_steps} steps on {self.config.eval_samples} samples")
