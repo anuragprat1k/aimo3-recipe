@@ -39,11 +39,15 @@ PY
 )
 echo "Existing PyTorch: ${TORCH_VERSION} (CUDA ${CUDA_VERSION})"
 
-echo "Installing Python dependencies into ${PIP_TARGET}..."
+echo "Installing core dependencies into ${PIP_TARGET}..."
 python3 -m pip install \
-  transformers peft datasets trl accelerate numpy sympy wandb \
-  hf_transfer tensorboard \
+  transformers datasets numpy sympy wandb hf_transfer tensorboard psutil \
   --target "${PIP_TARGET}"
+
+echo "Installing torch-dependent packages (no-deps) into ${PIP_TARGET}..."
+python3 -m pip install \
+  accelerate peft trl \
+  --target "${PIP_TARGET}" --no-deps
 
 # TRL-compatible vLLM version (matches repo setup)
 echo "Installing vLLM 0.12.0 (no-deps) into ${PIP_TARGET}..."
