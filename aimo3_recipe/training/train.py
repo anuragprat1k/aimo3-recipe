@@ -343,6 +343,12 @@ def main():
         default=None,
         help="Number of training epochs (default: 1)",
     )
+    parser.add_argument(
+        "--save-steps",
+        type=int,
+        default=None,
+        help="Save checkpoint every N steps (default: 100)",
+    )
 
     # LLM Judge arguments
     parser.add_argument(
@@ -404,6 +410,8 @@ def main():
         kwargs["run_name"] = args.run_name
     if args.num_epochs is not None:
         kwargs["num_train_epochs"] = args.num_epochs
+    if args.save_steps is not None:
+        kwargs["save_steps"] = args.save_steps
 
     if args.stage == "full":
         run_full_pipeline(
