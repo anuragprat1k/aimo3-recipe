@@ -337,6 +337,12 @@ def main():
         default="rl_math_grpo",
         help="Name for the training run (useful for distinguishing runs, default: rl_math_grpo)",
     )
+    parser.add_argument(
+        "--num-epochs",
+        type=int,
+        default=None,
+        help="Number of training epochs (default: 1)",
+    )
 
     # LLM Judge arguments
     parser.add_argument(
@@ -396,6 +402,8 @@ def main():
         kwargs["logging_steps"] = args.logging_steps
     if args.run_name is not None:
         kwargs["run_name"] = args.run_name
+    if args.num_epochs is not None:
+        kwargs["num_train_epochs"] = args.num_epochs
 
     if args.stage == "full":
         run_full_pipeline(
