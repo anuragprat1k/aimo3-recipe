@@ -419,7 +419,7 @@ def main():
     elif args.stage == "rl":
         run_stage3_rl(
             base_model=args.base_model,
-            output_dir=f"{args.output_dir}/rl_math",
+            output_dir=f"{args.output_dir}/{args.run_name}",
             max_samples=args.max_samples,
             **kwargs,
         )

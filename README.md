@@ -161,7 +161,7 @@ Sample saving:
 
 CLI flags (RL stage):
 - `--logging-steps 5` to set how often training metrics are logged (default: 5).
-- `--run-name NAME` to set a name for the training run for TensorBoard/WandB (default: `rl_math_grpo`).
+- `--run-name NAME` to set the run name; artifacts are saved to `{output_dir}/{run_name}` (default: `rl_math_grpo`).
 - `--save-samples` to enable sample saving (to disk and wandb).
 - `--sample-save-rate 0.01` to control the fraction saved.
 - `--samples-filename samples.jsonl` to choose the output filename.
