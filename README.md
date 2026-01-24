@@ -160,6 +160,7 @@ Sample saving:
 - Samples are also logged to WandB as tables when `report_to=wandb`.
 
 CLI flags (RL stage):
+- `--num-epochs 1` to set the number of training epochs (default: 1).
 - `--logging-steps 5` to set how often training metrics are logged (default: 5).
 - `--run-name NAME` to set the run name; artifacts are saved to `{output_dir}/{run_name}` (default: `rl_math_grpo`).
 - `--save-samples` to enable sample saving (to disk and wandb).
