@@ -25,20 +25,33 @@ class BenchmarkConfig:
     description: str = ""
 
 
-# Hendrycks MATH benchmark
+# Hendrycks MATH benchmark (using EleutherAI mirror)
+# Note: EleutherAI/hendrycks_math requires a subset, using "all" loads all subjects
 MATH_BENCHMARK = BenchmarkConfig(
     name="MATH",
-    dataset_name="hendrycks/competition_math",
+    dataset_name="EleutherAI/hendrycks_math",
+    subset="all",
     split="test",
     problem_column="problem",
     answer_column="solution",
     description="Hendrycks MATH benchmark - 5000 problems across 7 subjects",
 )
 
+# MATH-500 subset (curated 500 problems from OpenAI's Let's Verify Step by Step)
+MATH_500_BENCHMARK = BenchmarkConfig(
+    name="MATH-500",
+    dataset_name="HuggingFaceH4/MATH-500",
+    split="test",
+    problem_column="problem",
+    answer_column="solution",
+    description="MATH-500 - curated subset of 500 representative problems",
+)
+
 # MATH by difficulty level
 MATH_LEVEL_1 = BenchmarkConfig(
     name="MATH-Level1",
-    dataset_name="hendrycks/competition_math",
+    dataset_name="EleutherAI/hendrycks_math",
+    subset="all",
     split="test",
     problem_column="problem",
     answer_column="solution",
@@ -48,7 +61,8 @@ MATH_LEVEL_1 = BenchmarkConfig(
 
 MATH_LEVEL_5 = BenchmarkConfig(
     name="MATH-Level5",
-    dataset_name="hendrycks/competition_math",
+    dataset_name="EleutherAI/hendrycks_math",
+    subset="all",
     split="test",
     problem_column="problem",
     answer_column="solution",
@@ -136,6 +150,7 @@ def load_benchmark(config: BenchmarkConfig, max_samples: Optional[int] = None) -
 # All available benchmarks
 ALL_BENCHMARKS = {
     "math": MATH_BENCHMARK,
+    "math500": MATH_500_BENCHMARK,
     "math_level1": MATH_LEVEL_1,
     "math_level5": MATH_LEVEL_5,
     "amc": AMC_BENCHMARK,
