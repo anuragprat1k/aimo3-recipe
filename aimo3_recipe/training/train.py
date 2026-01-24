@@ -325,6 +325,18 @@ def main():
         default=None,
         help="Where to report metrics (default: tensorboard)",
     )
+    parser.add_argument(
+        "--logging-steps",
+        type=int,
+        default=None,
+        help="Log training metrics every N steps (default: 5)",
+    )
+    parser.add_argument(
+        "--run-name",
+        type=str,
+        default="rl_math_grpo",
+        help="Name for the training run (useful for distinguishing runs, default: rl_math_grpo)",
+    )
 
     # LLM Judge arguments
     parser.add_argument(
@@ -380,6 +392,10 @@ def main():
         kwargs["llm_judge_weight"] = args.llm_judge_weight
     if args.report_to is not None:
         kwargs["report_to"] = args.report_to
+    if args.logging_steps is not None:
+        kwargs["logging_steps"] = args.logging_steps
+    if args.run_name is not None:
+        kwargs["run_name"] = args.run_name
 
     if args.stage == "full":
         run_full_pipeline(
@@ -403,7 +419,7 @@ def main():
     elif args.stage == "rl":
         run_stage3_rl(
             base_model=args.base_model,
-            output_dir=f"{args.output_dir}/rl_math",
+            output_dir=f"{args.output_dir}/{args.run_name}",
             max_samples=args.max_samples,
             **kwargs,
         )
