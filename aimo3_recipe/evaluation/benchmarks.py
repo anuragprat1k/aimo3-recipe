@@ -20,6 +20,7 @@ class BenchmarkConfig:
     split: str
     problem_column: str
     answer_column: str
+    subset: Optional[str] = None  # Dataset subset/config name
     filter_fn: Optional[callable] = None
     description: str = ""
 
@@ -27,7 +28,7 @@ class BenchmarkConfig:
 # Hendrycks MATH benchmark
 MATH_BENCHMARK = BenchmarkConfig(
     name="MATH",
-    dataset_name="lighteval/MATH",
+    dataset_name="hendrycks/competition_math",
     split="test",
     problem_column="problem",
     answer_column="solution",
@@ -37,7 +38,7 @@ MATH_BENCHMARK = BenchmarkConfig(
 # MATH by difficulty level
 MATH_LEVEL_1 = BenchmarkConfig(
     name="MATH-Level1",
-    dataset_name="lighteval/MATH",
+    dataset_name="hendrycks/competition_math",
     split="test",
     problem_column="problem",
     answer_column="solution",
@@ -47,7 +48,7 @@ MATH_LEVEL_1 = BenchmarkConfig(
 
 MATH_LEVEL_5 = BenchmarkConfig(
     name="MATH-Level5",
-    dataset_name="lighteval/MATH",
+    dataset_name="hendrycks/competition_math",
     split="test",
     problem_column="problem",
     answer_column="solution",
@@ -91,6 +92,7 @@ OLYMPIAD_BENCHMARK = BenchmarkConfig(
 GSM8K_BENCHMARK = BenchmarkConfig(
     name="GSM8K",
     dataset_name="openai/gsm8k",
+    subset="main",
     split="test",
     problem_column="question",
     answer_column="answer",
@@ -109,7 +111,10 @@ def load_benchmark(config: BenchmarkConfig, max_samples: Optional[int] = None) -
     Returns:
         Dataset ready for evaluation
     """
-    dataset = load_dataset(config.dataset_name, split=config.split)
+    if config.subset:
+        dataset = load_dataset(config.dataset_name, config.subset, split=config.split)
+    else:
+        dataset = load_dataset(config.dataset_name, split=config.split)
 
     # Apply filter if specified
     if config.filter_fn:
