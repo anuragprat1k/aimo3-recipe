@@ -934,6 +934,13 @@ class RLMathTrainer:
             callbacks=callbacks if callbacks else None,
         )
 
+        # Allow numpy globals for checkpoint loading (PyTorch 2.6+ compatibility)
+        if resume_from_checkpoint:
+            import numpy.core.multiarray
+            torch.serialization.add_safe_globals([numpy.core.multiarray._reconstruct])
+            # Also add numpy dtypes that may be in checkpoints
+            torch.serialization.add_safe_globals([np.ndarray, np.dtype])
+
         # Train
         self.trainer.train(resume_from_checkpoint=resume_from_checkpoint)
 
