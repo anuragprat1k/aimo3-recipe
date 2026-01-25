@@ -7,6 +7,18 @@ Orchestrates the multi-stage training pipeline:
 3. Stage 3: RL with correctness rewards
 """
 
+# PyTorch 2.6+ compatibility: monkey-patch torch.load to handle checkpoint loading
+# This must happen BEFORE any other imports to ensure it applies to all ranks
+import torch
+_original_torch_load = torch.load
+def _patched_torch_load(*args, **kwargs):
+    # Default to weights_only=False for backward compatibility with checkpoints
+    # that contain numpy arrays in RNG state
+    if 'weights_only' not in kwargs:
+        kwargs['weights_only'] = False
+    return _original_torch_load(*args, **kwargs)
+torch.load = _patched_torch_load
+
 import argparse
 import os
 import re
