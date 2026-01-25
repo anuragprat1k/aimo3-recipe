@@ -9,12 +9,45 @@ Orchestrates the multi-stage training pipeline:
 
 import argparse
 import os
+import re
 from pathlib import Path
 from datasets import load_dataset, Dataset
 from aimo3_recipe.training.sft_cot import SFTCoTTrainer, SFTCoTConfig
 from aimo3_recipe.training.sft_tir import SFTTIRTrainer, SFTTIRConfig
 from aimo3_recipe.training.rl_math import RLMathTrainer, RLMathConfig, MathRewardFunction, LLMJudgeRewardFunction
 from aimo3_recipe.evaluation.answer_extraction import verify_answer
+
+
+def get_latest_checkpoint(output_dir: str) -> str | None:
+    """
+    Find the latest checkpoint in the given output directory.
+
+    Checkpoints are expected to be in the format 'checkpoint-{step}'.
+    Returns the path to the latest checkpoint, or None if no checkpoints exist.
+    """
+    output_path = Path(output_dir)
+    if not output_path.exists():
+        return None
+
+    # Find all checkpoint directories
+    checkpoint_pattern = re.compile(r"checkpoint-(\d+)$")
+    checkpoints = []
+
+    for item in output_path.iterdir():
+        if item.is_dir():
+            match = checkpoint_pattern.match(item.name)
+            if match:
+                step = int(match.group(1))
+                checkpoints.append((step, item))
+
+    if not checkpoints:
+        return None
+
+    # Sort by step number and return the latest
+    checkpoints.sort(key=lambda x: x[0], reverse=True)
+    latest_checkpoint = checkpoints[0][1]
+
+    return str(latest_checkpoint)
 
 
 def load_math_datasets(stage: str, max_samples: int | None = None) -> tuple[Dataset, Dataset]:
@@ -122,6 +155,7 @@ def run_stage3_rl(
     base_model: str = "./outputs/sft_tir",
     output_dir: str = "./outputs/rl_math",
     max_samples: int | None = None,
+    resume_from_checkpoint: str | None = None,
     **kwargs,
 ) -> None:
     """Run Stage 3: Reinforcement Learning with correctness rewards."""
@@ -129,6 +163,20 @@ def run_stage3_rl(
     print("=" * 60)
     print("Stage 3: RL with Correctness Rewards")
     print("=" * 60)
+
+    # Handle resume from checkpoint
+    checkpoint_path = None
+    if resume_from_checkpoint == "auto":
+        checkpoint_path = get_latest_checkpoint(output_dir)
+        if checkpoint_path:
+            print(f"Auto-detected latest checkpoint: {checkpoint_path}")
+        else:
+            print("No existing checkpoints found, starting from scratch")
+    elif resume_from_checkpoint:
+        checkpoint_path = resume_from_checkpoint
+        if not Path(checkpoint_path).exists():
+            raise ValueError(f"Checkpoint path does not exist: {checkpoint_path}")
+        print(f"Resuming from specified checkpoint: {checkpoint_path}")
 
     if "report_to" not in kwargs:
         if os.getenv("WANDB_DISABLED") or not os.getenv("WANDB_API_KEY"):
@@ -187,7 +235,7 @@ def run_stage3_rl(
     print(f"Train samples: {len(train_dataset)}, Eval samples: {len(eval_dataset)}")
 
     trainer = RLMathTrainer(config, reward_fn)
-    trainer.train(train_dataset, eval_dataset)
+    trainer.train(train_dataset, eval_dataset, resume_from_checkpoint=checkpoint_path)
 
 
 def run_full_pipeline(
@@ -349,6 +397,16 @@ def main():
         default=None,
         help="Save checkpoint every N steps (default: 100)",
     )
+    parser.add_argument(
+        "--resume-from-checkpoint",
+        type=str,
+        nargs="?",
+        const="auto",
+        default=None,
+        help="Resume training from a checkpoint. If a path is provided, resume from that checkpoint. "
+        "If no path is provided (just the flag), automatically find and resume from the latest checkpoint "
+        "in the output directory.",
+    )
 
     # LLM Judge arguments
     parser.add_argument(
@@ -437,6 +495,7 @@ def main():
             base_model=args.base_model,
             output_dir=f"{args.output_dir}/{args.run_name}",
             max_samples=args.max_samples,
+            resume_from_checkpoint=args.resume_from_checkpoint,
             **kwargs,
         )
 

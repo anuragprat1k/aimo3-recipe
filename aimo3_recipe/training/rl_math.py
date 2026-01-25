@@ -820,8 +820,19 @@ class RLMathTrainer:
 
         return dataset
 
-    def train(self, dataset: Dataset, eval_dataset: Optional[Dataset] = None) -> None:
-        """Run GRPO training."""
+    def train(
+        self,
+        dataset: Dataset,
+        eval_dataset: Optional[Dataset] = None,
+        resume_from_checkpoint: Optional[str] = None,
+    ) -> None:
+        """Run GRPO training.
+
+        Args:
+            dataset: Training dataset
+            eval_dataset: Optional evaluation dataset
+            resume_from_checkpoint: Optional path to checkpoint to resume from
+        """
 
         if self.model is None:
             self.setup_model()
@@ -924,7 +935,7 @@ class RLMathTrainer:
         )
 
         # Train
-        self.trainer.train()
+        self.trainer.train(resume_from_checkpoint=resume_from_checkpoint)
 
         # Save final model
         self.trainer.save_model(self.config.output_dir)
