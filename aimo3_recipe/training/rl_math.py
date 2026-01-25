@@ -21,6 +21,15 @@ from trl import GRPOTrainer, GRPOConfig
 import numpy as np
 from tqdm import tqdm
 
+# PyTorch 2.6+ compatibility: register numpy globals for checkpoint loading
+# This must happen at module level before any checkpoint loading occurs
+import numpy.core.multiarray
+torch.serialization.add_safe_globals([
+    numpy.core.multiarray._reconstruct,
+    np.ndarray,
+    np.dtype,
+])
+
 
 @dataclass
 class RLMathConfig:
