@@ -100,6 +100,12 @@ def main():
     parser.add_argument("--benchmarks", type=str, default=None, help="Comma-separated list of benchmarks (default: all)")
     parser.add_argument("--use-vllm", action="store_true", default=True, help="Use vLLM for inference")
     parser.add_argument("--no-vllm", action="store_true", help="Disable vLLM")
+    parser.add_argument(
+        "--num-workers",
+        type=int,
+        default=0,
+        help="Number of workers for parallel answer verification (0=auto, -1=disable)",
+    )
     args = parser.parse_args()
 
     use_vllm = args.use_vllm and not args.no_vllm
@@ -139,6 +145,7 @@ def main():
         num_samples=args.num_samples,
         max_samples=args.max_samples,
         output_dir=args.output_dir,
+        num_workers=args.num_workers,
     )
     evaluator = MathEvaluator(config)
 

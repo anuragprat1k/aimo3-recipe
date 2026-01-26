@@ -6,12 +6,15 @@ Supports:
 - Self-consistency with majority voting
 - Tool-Integrated Reasoning evaluation
 - GenSelect evaluation
+- Multiprocessing for faster answer verification
 """
 
 import argparse
 import json
 import logging
+import multiprocessing as mp
 from dataclasses import dataclass
+from functools import partial
 from pathlib import Path
 from typing import Optional
 from collections import Counter
@@ -62,6 +65,89 @@ class EvalConfig:
     # Output
     output_dir: str = "./eval_results"
     save_predictions: bool = True
+
+    # Multiprocessing
+    num_workers: int = 0  # 0 = auto (use all CPUs), -1 = disable multiprocessing
+
+
+def _verify_single_answer(args: tuple) -> tuple:
+    """
+    Verify a single answer. Used for multiprocessing.
+
+    Args:
+        args: Tuple of (index, response, ground_truth)
+
+    Returns:
+        Tuple of (index, is_correct)
+    """
+    idx, response, ground_truth = args
+    is_correct = verify_answer(response, ground_truth)
+    return idx, is_correct
+
+
+# Global pool for reuse across calls (lazy initialization)
+_WORKER_POOL = None
+_POOL_SIZE = None
+
+
+def _get_worker_pool(num_workers: int) -> mp.Pool:
+    """Get or create a worker pool for parallel verification."""
+    global _WORKER_POOL, _POOL_SIZE
+    if _WORKER_POOL is None or _POOL_SIZE != num_workers:
+        if _WORKER_POOL is not None:
+            _WORKER_POOL.terminate()
+        _POOL_SIZE = num_workers
+        _WORKER_POOL = mp.Pool(processes=num_workers)
+    return _WORKER_POOL
+
+
+def verify_answers_parallel(
+    responses: list[str],
+    ground_truths: list[str],
+    num_workers: int = 0,
+) -> list[bool]:
+    """
+    Verify multiple answers in parallel using multiprocessing.
+
+    Uses a persistent worker pool to avoid process spawn overhead on repeated calls.
+    Only enables parallelization for batches >= 100 items where the benefit outweighs overhead.
+
+    Args:
+        responses: List of model responses
+        ground_truths: List of ground truth answers
+        num_workers: Number of worker processes. 0 = auto (all CPUs), -1 = sequential
+
+    Returns:
+        List of boolean correctness values
+    """
+    # Use sequential processing for small batches or when disabled
+    # Multiprocessing overhead only pays off for larger batches
+    min_batch_for_parallel = 100
+    if num_workers == -1 or len(responses) < min_batch_for_parallel:
+        return [verify_answer(r, gt) for r, gt in zip(responses, ground_truths)]
+
+    # Determine number of workers
+    if num_workers == 0:
+        num_workers = min(mp.cpu_count(), 8)  # Cap at 8 workers to reduce overhead
+    num_workers = min(num_workers, len(responses))
+
+    # Prepare arguments
+    args = [(i, r, gt) for i, (r, gt) in enumerate(zip(responses, ground_truths))]
+
+    # Process in parallel using persistent pool
+    results = [False] * len(responses)
+    try:
+        pool = _get_worker_pool(num_workers)
+        # Use larger chunksize for better efficiency
+        chunksize = max(1, len(args) // (num_workers * 4))
+        for idx, is_correct in pool.imap_unordered(_verify_single_answer, args, chunksize=chunksize):
+            results[idx] = is_correct
+    except Exception as e:
+        # Fall back to sequential on any pool error
+        logger.warning(f"Parallel verification failed, falling back to sequential: {e}")
+        return [verify_answer(r, gt) for r, gt in zip(responses, ground_truths)]
+
+    return results
 
 
 class MathEvaluator:
@@ -199,6 +285,7 @@ Put your final answer in \\boxed{{}}.<|im_end|>
         Evaluate model on a dataset.
 
         Returns metrics and predictions.
+        Uses multiprocessing for faster answer verification.
         """
         if self.model is None:
             self.setup_model()
@@ -224,17 +311,25 @@ Put your final answer in \\boxed{{}}.<|im_end|>
             # Generate responses
             all_responses = self.generate(prompts)
 
-            # Evaluate each problem
-            for j, (problem, gt_solution, responses) in enumerate(zip(batch_problems, batch_solutions, all_responses)):
-                # Apply majority voting if multiple samples
+            # Apply majority voting if multiple samples
+            final_responses = []
+            for responses in all_responses:
                 if self.config.num_samples > 1:
-                    final_response = self.majority_vote(responses)
+                    final_responses.append(self.majority_vote(responses))
                 else:
-                    final_response = responses[0]
+                    final_responses.append(responses[0])
 
-                # Check correctness
-                is_correct = verify_answer(final_response, gt_solution)
+            # Verify answers in parallel for better performance
+            correctness = verify_answers_parallel(
+                final_responses,
+                batch_solutions,
+                num_workers=self.config.num_workers,
+            )
 
+            # Collect results
+            for j, (problem, gt_solution, responses, final_response, is_correct) in enumerate(
+                zip(batch_problems, batch_solutions, all_responses, final_responses, correctness)
+            ):
                 results["correct"] += int(is_correct)
                 results["total"] += 1
 
@@ -262,6 +357,12 @@ def main():
     parser.add_argument("--output-dir", type=str, default="./eval_results")
     parser.add_argument("--use-vllm", action="store_true", default=True)
     parser.add_argument("--use-tir", action="store_true", help="Use Tool-Integrated Reasoning")
+    parser.add_argument(
+        "--num-workers",
+        type=int,
+        default=0,
+        help="Number of workers for parallel answer verification (0=auto, -1=disable)",
+    )
 
     args = parser.parse_args()
 
@@ -273,6 +374,7 @@ def main():
         output_dir=args.output_dir,
         use_vllm=args.use_vllm,
         use_tir=args.use_tir,
+        num_workers=args.num_workers,
     )
 
     # Load benchmark
