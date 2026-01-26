@@ -8,9 +8,9 @@ Provides standardized benchmark configurations for:
 - GSM8K (grade school math)
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Optional
-from datasets import load_dataset, Dataset
+from datasets import load_dataset, Dataset, concatenate_datasets
 
 
 @dataclass
@@ -22,6 +22,7 @@ class BenchmarkConfig:
     problem_column: str
     answer_column: str
     subset: Optional[str] = None  # Dataset subset/config name
+    subsets: list[str] = field(default_factory=list)  # Multiple subsets to concatenate
     filter_fn: Optional[callable] = None
     description: str = ""
 
@@ -74,7 +75,8 @@ AIME_BENCHMARK = BenchmarkConfig(
     split="test",
     problem_column="question",
     answer_column="answer",
-    description="AIME 2025 competition problems",
+    subsets=["AIME2025-I", "AIME2025-II"],
+    description="AIME 2025 competition problems (I and II)",
 )
 
 # MATH-500 benchmark (challenging subset of MATH)
@@ -110,7 +112,14 @@ def load_benchmark(config: BenchmarkConfig, max_samples: Optional[int] = None) -
     Returns:
         Dataset ready for evaluation
     """
-    if config.subset:
+    if config.subsets:
+        # Load multiple subsets and concatenate
+        datasets = [
+            load_dataset(config.dataset_name, subset, split=config.split)
+            for subset in config.subsets
+        ]
+        dataset = concatenate_datasets(datasets)
+    elif config.subset:
         dataset = load_dataset(config.dataset_name, config.subset, split=config.split)
     else:
         dataset = load_dataset(config.dataset_name, split=config.split)

@@ -342,6 +342,17 @@ def main():
         print(f"GPUs per benchmark: {args.gpus_per_benchmark}")
     print("=" * 60)
 
+    # Print dataset sizes before evaluation
+    print("\nDataset sizes:")
+    for name in benchmark_names:
+        try:
+            benchmark_config = get_benchmark(name)
+            dataset = load_benchmark(benchmark_config, args.max_samples)
+            print(f"  {name}: {len(dataset)} samples")
+        except Exception as e:
+            print(f"  {name}: Error loading - {e}")
+    print("=" * 60)
+
     # Create output directory
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
