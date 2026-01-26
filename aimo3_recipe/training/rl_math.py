@@ -21,6 +21,8 @@ from trl import GRPOTrainer, GRPOConfig
 import numpy as np
 from tqdm import tqdm
 
+from aimo3_recipe.evaluation.benchmarks import load_benchmark, get_benchmark
+
 # PyTorch 2.6+ compatibility: register numpy globals for checkpoint loading
 # This must happen at module level before any checkpoint loading occurs
 import numpy.core.multiarray
@@ -568,13 +570,13 @@ class MetricsLoggingCallback(TrainerCallback):
 
 
 class EvalCallback(TrainerCallback):
-    """Callback to evaluate model accuracy on held-out problems during RL training."""
+    """Callback to evaluate model accuracy on benchmark datasets during RL training."""
 
     def __init__(
         self,
-        eval_dataset: Dataset,
         tokenizer: AutoTokenizer,
         answer_verifier: Callable[[str, str], bool],
+        benchmark_names: list[str] = None,
         eval_steps: int = 100,
         eval_samples: int = 50,
         max_completion_length: int = 2048,
@@ -583,17 +585,29 @@ class EvalCallback(TrainerCallback):
         eval_batch_size: int = 8,
         output_dir: str = None,
     ):
-        self.eval_dataset = eval_dataset
         self.tokenizer = tokenizer
         self.answer_verifier = answer_verifier
+        self.benchmark_names = benchmark_names or ["aime", "gsm8k", "math500"]
         self.eval_steps = eval_steps
-        self.eval_samples = min(eval_samples, len(eval_dataset))
+        self.eval_samples = eval_samples
         self.max_completion_length = max_completion_length
         self.temperature = temperature
         self.report_to = report_to
         self.eval_batch_size = eval_batch_size
         self._wandb = None
         self._tb_writer = None
+
+        # Load benchmarks
+        self.benchmarks = {}
+        for name in self.benchmark_names:
+            try:
+                config = get_benchmark(name)
+                dataset = load_benchmark(config)
+                self.benchmarks[name] = dataset
+                print(f"  Loaded benchmark {name}: {len(dataset)} samples")
+            except Exception as e:
+                print(f"  Warning: Failed to load benchmark {name}: {e}")
+
         if self.report_to == "wandb":
             try:
                 import wandb
@@ -617,24 +631,30 @@ class EvalCallback(TrainerCallback):
             return
 
         print(f"\n[Eval] Running evaluation at step {state.global_step}...", flush=True)
-        metrics = self._run_evaluation(model, state.global_step)
+
+        all_metrics = {}
+        for name, dataset in self.benchmarks.items():
+            print(f"[Eval] Evaluating on {name}...", flush=True)
+            metrics = self._run_evaluation(model, dataset, name, state.global_step)
+            all_metrics.update(metrics)
 
         # Log metrics
-        print(f"[Eval] Step {state.global_step}: {metrics}", flush=True)
+        print(f"[Eval] Step {state.global_step}: {all_metrics}", flush=True)
         if self._wandb and self._wandb.run is not None:
-            self._wandb.log(metrics, step=state.global_step)
+            self._wandb.log(all_metrics, step=state.global_step)
         elif self._tb_writer is not None:
-            for key, value in metrics.items():
+            for key, value in all_metrics.items():
                 self._tb_writer.add_scalar(key, value, state.global_step)
             self._tb_writer.flush()
 
-    def _run_evaluation(self, model, step: int) -> dict:
+    def _run_evaluation(self, model, dataset: Dataset, benchmark_name: str, step: int) -> dict:
         """Generate on eval samples and compute accuracy using batched generation."""
         model.eval()
 
         # Sample subset of eval data
-        indices = random.sample(range(len(self.eval_dataset)), self.eval_samples)
-        eval_subset = self.eval_dataset.select(indices)
+        num_samples = min(self.eval_samples, len(dataset))
+        indices = random.sample(range(len(dataset)), num_samples)
+        eval_subset = dataset.select(indices)
 
         correct = 0
         total = 0
@@ -642,9 +662,12 @@ class EvalCallback(TrainerCallback):
         total_length = 0
         eval_results = []
 
-        # Collect all prompts and ground truths
-        all_prompts = [ex["prompt"] for ex in eval_subset]
-        all_ground_truths = [ex["answer"] for ex in eval_subset]
+        # Collect all problems and ground truths (standardized column names from benchmarks)
+        all_problems = [ex["problem"] for ex in eval_subset]
+        all_ground_truths = [ex["solution"] for ex in eval_subset]
+
+        # Format problems as prompts
+        all_prompts = [f"Solve this problem:\n{p}\n\nSolution:" for p in all_problems]
 
         # Process in batches
         num_batches = (len(all_prompts) + self.eval_batch_size - 1) // self.eval_batch_size
@@ -715,26 +738,30 @@ class EvalCallback(TrainerCallback):
         boxed_rate = has_boxed / total if total > 0 else 0
         avg_length = total_length / total if total > 0 else 0
 
+        # Prefix metrics with benchmark name
+        prefix = f"eval/{benchmark_name}"
         metrics = {
-            "eval/accuracy": accuracy,
-            "eval/boxed_rate": boxed_rate,
-            "eval/avg_completion_length": avg_length,
-            "eval/num_samples": total,
-            "eval/num_correct": correct,
+            f"{prefix}/accuracy": accuracy,
+            f"{prefix}/boxed_rate": boxed_rate,
+            f"{prefix}/avg_length": avg_length,
+            f"{prefix}/num_samples": total,
+            f"{prefix}/num_correct": correct,
         }
+
+        print(f"[Eval] {benchmark_name}: {accuracy:.2%} ({correct}/{total})", flush=True)
 
         # Log sample table to wandb
         if self._wandb and self._wandb.run is not None and eval_results:
             table_data = [
                 [r["prompt"], r["completion"], r["ground_truth"], r["is_correct"]]
-                for r in eval_results[:10]  # Limit to 10 for display
+                for r in eval_results[:5]  # Limit to 5 for display
             ]
             table = self._wandb.Table(
                 columns=["prompt", "completion", "ground_truth", "is_correct"],
                 data=table_data,
             )
             # Use commit=False to avoid step conflicts with trainer's logging
-            self._wandb.log({f"eval/samples_step_{step}": table}, commit=False)
+            self._wandb.log({f"eval/{benchmark_name}/samples_step_{step}": table}, commit=False)
 
         model.train()
         return metrics
@@ -890,12 +917,13 @@ class RLMathTrainer:
         # Setup callbacks
         callbacks = [MetricsLoggingCallback()]
 
-        # Add evaluation callback if eval dataset provided
-        if eval_dataset is not None and self.reward_fn is not None:
+        # Add evaluation callback for benchmark evaluation
+        if self.reward_fn is not None:
+            print(f"Setting up benchmark evaluation...")
             eval_callback = EvalCallback(
-                eval_dataset=eval_dataset,
                 tokenizer=self.tokenizer,
                 answer_verifier=self.reward_fn.answer_verifier,
+                benchmark_names=["aime", "gsm8k", "math500"],
                 eval_steps=self.config.eval_steps,
                 eval_samples=self.config.eval_samples,
                 max_completion_length=self.config.max_completion_length,
@@ -905,7 +933,7 @@ class RLMathTrainer:
                 output_dir=self.config.output_dir,
             )
             callbacks.append(eval_callback)
-            print(f"Evaluation enabled: every {self.config.eval_steps} steps on {self.config.eval_samples} samples")
+            print(f"Evaluation enabled: every {self.config.eval_steps} steps on {self.config.eval_samples} samples per benchmark")
 
         # GRPO configuration
         grpo_config = GRPOConfig(
