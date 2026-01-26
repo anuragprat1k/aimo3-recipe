@@ -12,7 +12,7 @@ Usage:
 
     # Parallel evaluation across GPUs (8 GPUs, 3 benchmarks = 3 parallel processes):
     python -m aimo3_recipe.evaluation.evaluate_all --model ./outputs/rl_math/checkpoint-142 \\
-        --benchmarks aime,olympiad,gsm8k --parallel --gpus-per-benchmark 2
+        --benchmarks aime,math500,gsm8k --parallel --gpus-per-benchmark 2
 """
 
 import argparse
