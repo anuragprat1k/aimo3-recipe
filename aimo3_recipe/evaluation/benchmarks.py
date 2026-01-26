@@ -3,8 +3,9 @@ Benchmark definitions for math evaluation.
 
 Provides standardized benchmark configurations for:
 - MATH (Hendrycks)
-- AMC/AIME (competition problems)
-- Olympiad-level problems
+- MATH-500 (challenging subset)
+- AIME (competition problems)
+- GSM8K (grade school math)
 """
 
 from dataclasses import dataclass
@@ -69,23 +70,21 @@ AMC_BENCHMARK = BenchmarkConfig(
 
 AIME_BENCHMARK = BenchmarkConfig(
     name="AIME",
-    dataset_name="AI-MO/NuminaMath-CoT",
-    split="train",
-    problem_column="problem",
-    answer_column="solution",
-    filter_fn=lambda x: "aime" in x.get("source", "").lower(),
-    description="AIME competition problems",
+    dataset_name="opencompass/AIME2025",
+    split="test",
+    problem_column="question",
+    answer_column="answer",
+    description="AIME 2025 competition problems",
 )
 
-# Olympiad problems
-OLYMPIAD_BENCHMARK = BenchmarkConfig(
-    name="Olympiad",
-    dataset_name="AI-MO/NuminaMath-CoT",
-    split="train",
+# MATH-500 benchmark (challenging subset of MATH)
+MATH500_BENCHMARK = BenchmarkConfig(
+    name="MATH-500",
+    dataset_name="HuggingFaceH4/MATH-500",
+    split="test",
     problem_column="problem",
-    answer_column="solution",
-    filter_fn=lambda x: "olympiad" in x.get("source", "").lower() or "imo" in x.get("source", "").lower(),
-    description="International Math Olympiad level problems",
+    answer_column="answer",
+    description="MATH-500 benchmark - 500 challenging problems from MATH",
 )
 
 # GSM8K for basic math
@@ -140,7 +139,7 @@ ALL_BENCHMARKS = {
     "math_level5": MATH_LEVEL_5,
     "amc": AMC_BENCHMARK,
     "aime": AIME_BENCHMARK,
-    "olympiad": OLYMPIAD_BENCHMARK,
+    "math500": MATH500_BENCHMARK,
     "gsm8k": GSM8K_BENCHMARK,
 }
 
