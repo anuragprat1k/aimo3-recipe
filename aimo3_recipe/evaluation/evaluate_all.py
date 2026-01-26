@@ -17,6 +17,7 @@ Usage:
 
 import argparse
 import json
+import multiprocessing as mp
 import os
 import subprocess
 import sys
@@ -27,22 +28,34 @@ from concurrent.futures import ProcessPoolExecutor, as_completed
 
 from tqdm import tqdm
 
+# Use 'spawn' to avoid CUDA re-initialization issues in forked processes
+mp_context = mp.get_context('spawn')
+
 from aimo3_recipe.evaluation.evaluate import MathEvaluator, EvalConfig, verify_answers_parallel
 from aimo3_recipe.evaluation.benchmarks import load_benchmark, get_benchmark, ALL_BENCHMARKS
 
 
 def get_available_gpus() -> list[int]:
-    """Get list of available GPU indices."""
+    """Get list of available GPU indices without initializing CUDA."""
     cuda_visible = os.environ.get("CUDA_VISIBLE_DEVICES")
     if cuda_visible:
         return [int(x) for x in cuda_visible.split(",")]
 
-    # Try to detect GPUs
+    # Try to detect GPUs using nvidia-smi to avoid CUDA initialization
     try:
-        import torch
-        return list(range(torch.cuda.device_count()))
+        result = subprocess.run(
+            ["nvidia-smi", "--query-gpu=index", "--format=csv,noheader"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        if result.returncode == 0:
+            return [int(x.strip()) for x in result.stdout.strip().split("\n") if x.strip()]
     except Exception:
-        return [0]  # Default to single GPU
+        pass
+
+    # Fallback: assume 8 GPUs or check CUDA_VISIBLE_DEVICES
+    return list(range(8))
 
 
 def is_lora_adapter(model_path: str) -> bool:
@@ -213,7 +226,7 @@ def evaluate_parallel(
     all_results = {}
     benchmark_queue = list(benchmark_names)
 
-    with ProcessPoolExecutor(max_workers=max_parallel) as executor:
+    with ProcessPoolExecutor(max_workers=max_parallel, mp_context=mp_context) as executor:
         futures = {}
         gpu_assignments = {}
 
