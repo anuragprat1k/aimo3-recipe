@@ -16,8 +16,11 @@ import json
 import tempfile
 from pathlib import Path
 from datetime import datetime
+from concurrent.futures import ThreadPoolExecutor
 
-from aimo3_recipe.evaluation.evaluate import MathEvaluator, EvalConfig
+from tqdm import tqdm
+
+from aimo3_recipe.evaluation.evaluate import MathEvaluator, EvalConfig, verify_answers_parallel
 from aimo3_recipe.evaluation.benchmarks import load_benchmark, get_benchmark, ALL_BENCHMARKS
 
 
@@ -90,6 +93,88 @@ def merge_lora_adapter(adapter_path: str, output_path: str | None = None) -> str
     return str(output_path)
 
 
+def evaluate_combined(
+    evaluator: MathEvaluator,
+    benchmark_datasets: dict,
+    num_workers: int = 0,
+) -> dict:
+    """
+    Evaluate all benchmarks in a single combined pass for maximum throughput.
+
+    Combines all problems, runs inference once, then splits results back.
+
+    Args:
+        evaluator: Initialized MathEvaluator with model loaded
+        benchmark_datasets: Dict mapping benchmark name -> dataset
+        num_workers: Workers for parallel answer verification
+
+    Returns:
+        Dict mapping benchmark name -> results
+    """
+    # Combine all problems with tracking info
+    all_problems = []
+    all_solutions = []
+    problem_to_benchmark = []  # Track which benchmark each problem belongs to
+
+    for name, dataset in benchmark_datasets.items():
+        for i in range(len(dataset)):
+            all_problems.append(dataset[i]["problem"])
+            all_solutions.append(dataset[i]["solution"])
+            problem_to_benchmark.append(name)
+
+    total_problems = len(all_problems)
+    print(f"\nCombined {total_problems} problems from {len(benchmark_datasets)} benchmarks")
+
+    # Ensure model is loaded
+    if evaluator.model is None:
+        evaluator.setup_model()
+
+    # Format all prompts
+    all_prompts = [evaluator.format_prompt(p) for p in all_problems]
+
+    # Generate all responses in batches
+    print("Running inference...")
+    batch_size = 64 if evaluator.config.use_vllm else 1
+    all_responses = []
+
+    for i in tqdm(range(0, len(all_prompts), batch_size), desc="Generating"):
+        batch_prompts = all_prompts[i:i+batch_size]
+        batch_responses = evaluator.generate(batch_prompts)
+
+        # Apply majority voting if needed
+        for responses in batch_responses:
+            if evaluator.config.num_samples > 1:
+                all_responses.append(evaluator.majority_vote(responses))
+            else:
+                all_responses.append(responses[0])
+
+    # Verify all answers in parallel
+    print("Verifying answers...")
+    correctness = verify_answers_parallel(all_responses, all_solutions, num_workers=num_workers)
+
+    # Split results back by benchmark
+    results_by_benchmark = {name: {"correct": 0, "total": 0, "predictions": []} for name in benchmark_datasets}
+
+    for idx, (problem, solution, response, is_correct, bench_name) in enumerate(
+        zip(all_problems, all_solutions, all_responses, correctness, problem_to_benchmark)
+    ):
+        results_by_benchmark[bench_name]["total"] += 1
+        results_by_benchmark[bench_name]["correct"] += int(is_correct)
+        results_by_benchmark[bench_name]["predictions"].append({
+            "problem": problem,
+            "ground_truth": solution,
+            "prediction": response,
+            "correct": is_correct,
+        })
+
+    # Compute accuracies
+    for name in results_by_benchmark:
+        r = results_by_benchmark[name]
+        r["accuracy"] = r["correct"] / r["total"] if r["total"] > 0 else 0.0
+
+    return results_by_benchmark
+
+
 def main():
     parser = argparse.ArgumentParser(description="Evaluate on all benchmarks")
     parser.add_argument("--model", type=str, required=True, help="Model checkpoint path (supports LoRA adapters)")
@@ -105,6 +190,12 @@ def main():
         type=int,
         default=0,
         help="Number of workers for parallel answer verification (0=auto, -1=disable)",
+    )
+    parser.add_argument(
+        "--batch-size",
+        type=int,
+        default=64,
+        help="Batch size for vLLM inference (default: 64)",
     )
     args = parser.parse_args()
 
@@ -132,13 +223,28 @@ def main():
     print(f"Benchmarks: {benchmark_names}")
     print(f"Self-consistency samples: {args.num_samples}")
     print(f"Using vLLM: {use_vllm}")
+    print(f"Batch size: {args.batch_size}")
     print("=" * 60)
 
     # Create output directory
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    # Initialize evaluator once (reuses model across benchmarks)
+    # Load all benchmark datasets first (can be parallelized)
+    print("\nLoading datasets...")
+    benchmark_datasets = {}
+
+    def load_single_benchmark(name):
+        benchmark_config = get_benchmark(name)
+        dataset = load_benchmark(benchmark_config, args.max_samples)
+        return name, dataset
+
+    with ThreadPoolExecutor(max_workers=len(benchmark_names)) as executor:
+        for name, dataset in executor.map(load_single_benchmark, benchmark_names):
+            benchmark_datasets[name] = dataset
+            print(f"  {name}: {len(dataset)} problems")
+
+    # Initialize evaluator
     config = EvalConfig(
         model_name_or_path=model_path,
         use_vllm=use_vllm,
@@ -149,42 +255,25 @@ def main():
     )
     evaluator = MathEvaluator(config)
 
-    # Run evaluation on each benchmark
-    all_results = {}
-    for name in benchmark_names:
-        print(f"\nEvaluating on {name}...")
-        try:
-            benchmark_config = get_benchmark(name)
-            dataset = load_benchmark(benchmark_config, args.max_samples)
-            print(f"  Loaded {len(dataset)} problems")
-
+    # Run combined evaluation (single pass through all problems)
+    try:
+        all_results = evaluate_combined(evaluator, benchmark_datasets, args.num_workers)
+    except Exception as e:
+        print(f"Combined evaluation failed: {e}")
+        print("Falling back to sequential evaluation...")
+        all_results = {}
+        for name, dataset in benchmark_datasets.items():
+            print(f"\nEvaluating on {name}...")
             results = evaluator.evaluate(dataset)
-            accuracy = results["accuracy"]
-            correct = results["correct"]
-            total = results["total"]
+            all_results[name] = results
 
-            all_results[name] = {
-                "accuracy": accuracy,
-                "correct": correct,
-                "total": total,
-            }
-            print(f"  Accuracy: {accuracy:.2%} ({correct}/{total})")
-
-            # Save per-benchmark results
-            benchmark_file = output_dir / f"{name}_results.json"
-            with open(benchmark_file, "w") as f:
-                json.dump(results, f, indent=2)
-
-        except Exception as e:
-            print(f"  Error: {e}")
-            all_results[name] = {"error": str(e)}
-
-    # Print summary
+    # Print summary and save results
     print("\n" + "=" * 60)
     print("SUMMARY")
     print("=" * 60)
     print(f"{'Benchmark':<15} {'Accuracy':>10} {'Correct':>10} {'Total':>10}")
     print("-" * 45)
+
     for name, result in all_results.items():
         if "error" in result:
             print(f"{name:<15} {'ERROR':>10}")
@@ -192,13 +281,18 @@ def main():
             acc = f"{result['accuracy']:.2%}"
             print(f"{name:<15} {acc:>10} {result['correct']:>10} {result['total']:>10}")
 
+        # Save per-benchmark results
+        benchmark_file = output_dir / f"{name}_results.json"
+        with open(benchmark_file, "w") as f:
+            json.dump(result, f, indent=2)
+
     # Save summary
     summary = {
         "model": args.model,
         "merged_model": model_path if model_path != args.model else None,
         "num_samples": args.num_samples,
         "timestamp": datetime.now().isoformat(),
-        "results": all_results,
+        "results": {k: {kk: vv for kk, vv in v.items() if kk != "predictions"} for k, v in all_results.items()},
     }
     summary_file = output_dir / "summary.json"
     with open(summary_file, "w") as f:
