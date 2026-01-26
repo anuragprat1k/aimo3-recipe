@@ -21,6 +21,14 @@ from trl import GRPOTrainer, GRPOConfig
 import numpy as np
 from tqdm import tqdm
 
+from aimo3_recipe.utils.safe_paths import (
+    validate_path_within_project,
+    safe_mkdir,
+    safe_write_text,
+    safe_open_for_write,
+    SafePathError,
+)
+
 # PyTorch 2.6+ compatibility: register numpy globals for checkpoint loading
 # This must happen at module level before any checkpoint loading occurs
 import numpy.core.multiarray
@@ -405,12 +413,14 @@ class SampleSavingCallback(TrainerCallback):
         sample_rate: float = 0.01,
         reward_fn: Optional[MathRewardFunction] = None,
     ):
-        self.output_path = Path(output_path)
+        # Validate path is within project folder
+        self.output_path = validate_path_within_project(output_path)
         self.sample_rate = sample_rate
         self.reward_fn = reward_fn
-        self.output_path.parent.mkdir(parents=True, exist_ok=True)
-        # Clear file at start
-        self.output_path.write_text("")
+        # Use safe_mkdir to create parent directory
+        safe_mkdir(self.output_path.parent)
+        # Clear file at start using safe_write_text
+        safe_write_text(self.output_path, "")
 
     def on_log(self, args, state, control, logs=None, **kwargs):
         """Save samples when completions are logged."""
@@ -431,7 +441,8 @@ class SampleSavingCallback(TrainerCallback):
         elif not isinstance(rewards, list):
             rewards = []
 
-        with open(self.output_path, "a") as f:
+        # Use safe_open_for_write to append samples
+        with safe_open_for_write(self.output_path, "a") as f:
             for i, completion in enumerate(completions):
                 if random.random() > self.sample_rate:
                     continue
@@ -458,12 +469,14 @@ class SampleTrackingRewardFunction:
         log_to_wandb: bool = True,
     ):
         self.base_reward_fn = base_reward_fn
-        self.output_path = Path(output_path)
+        # Validate path is within project folder
+        self.output_path = validate_path_within_project(output_path)
         self.sample_rate = sample_rate
         self.log_to_wandb = log_to_wandb
-        self.output_path.parent.mkdir(parents=True, exist_ok=True)
-        # Clear file at start
-        self.output_path.write_text("")
+        # Use safe_mkdir to create parent directory
+        safe_mkdir(self.output_path.parent)
+        # Clear file at start using safe_write_text
+        safe_write_text(self.output_path, "")
         self._step = 0
         self._wandb = None
         if self.log_to_wandb:
@@ -503,9 +516,9 @@ class SampleTrackingRewardFunction:
             }
             samples_to_save.append(sample)
 
-        # Save to disk
+        # Save to disk using safe_open_for_write
         if samples_to_save:
-            with open(self.output_path, "a") as f:
+            with safe_open_for_write(self.output_path, "a") as f:
                 for sample in samples_to_save:
                     f.write(json.dumps(sample) + "\n")
 
@@ -842,6 +855,10 @@ class RLMathTrainer:
             eval_dataset: Optional evaluation dataset
             resume_from_checkpoint: Optional path to checkpoint to resume from
         """
+        # Validate output directory is within project folder
+        validated_output_dir = validate_path_within_project(self.config.output_dir)
+        # Update config with validated path
+        self.config.output_dir = str(validated_output_dir)
 
         if self.model is None:
             self.setup_model()

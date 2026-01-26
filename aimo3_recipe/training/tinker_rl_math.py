@@ -37,6 +37,14 @@ from tinker_cookbook.renderers import Qwen3Renderer, Renderer
 from tinker_cookbook.hyperparam_utils import get_lr
 from tinker_cookbook.utils.ml_log import setup_logging
 
+# Safe path utilities to ensure operations stay within project folder
+from aimo3_recipe.utils.safe_paths import (
+    validate_path_within_project,
+    safe_mkdir,
+    safe_open_for_write,
+    SafePathError,
+)
+
 logger = logging.getLogger(__name__)
 logging.getLogger("httpx").setLevel(logging.WARNING)
 
@@ -178,9 +186,9 @@ def train_math_rl(config: MathRLConfig) -> None:
     3. Calculate advantages (reward - mean_group_reward)
     4. Train on positive advantage samples
     """
-    # Setup logging
-    log_dir = Path(config.log_dir)
-    log_dir.mkdir(parents=True, exist_ok=True)
+    # Validate and setup logging directory (must be within project folder)
+    log_dir = validate_path_within_project(config.log_dir)
+    safe_mkdir(log_dir)
 
     ml_logger = setup_logging(
         log_dir=str(log_dir),
@@ -194,11 +202,11 @@ def train_math_rl(config: MathRLConfig) -> None:
     if config.wandb_project:
         logger.info(f"WandB logging enabled for project: {config.wandb_project}")
 
-    # Setup samples file if saving samples
+    # Setup samples file if saving samples (using safe path operations)
     samples_file = None
     if config.save_samples:
-        samples_path = log_dir / "samples.jsonl"
-        samples_file = open(samples_path, "w")
+        samples_path = validate_path_within_project(log_dir / "samples.jsonl")
+        samples_file = open(str(samples_path), "w")
         logger.info(f"Saving samples to {samples_path}")
 
     # Load tokenizer for renderer
@@ -469,14 +477,14 @@ def train_math_rl(config: MathRLConfig) -> None:
                 loss_str = ", ".join(f"{k}={v:.6f}" for k, v in fwd_bwd_result.metrics.items())
                 logger.info(f"    Loss metrics: {loss_str}")
 
-            # Save checkpoint
+            # Save checkpoint (path already validated since log_dir is validated)
             if config.save_every > 0 and step % config.save_every == 0:
-                checkpoint_path = log_dir / f"checkpoint-{step:06d}"
+                checkpoint_path = validate_path_within_project(log_dir / f"checkpoint-{step:06d}")
                 training_client.save_state(str(checkpoint_path))
                 logger.info(f"  Saved checkpoint to {checkpoint_path}")
 
-    # Save final model
-    final_path = log_dir / "final"
+    # Save final model (path already validated since log_dir is validated)
+    final_path = validate_path_within_project(log_dir / "final")
     training_client.save_state(str(final_path))
     logger.info(f"Training complete! Final model saved to {final_path}")
 
