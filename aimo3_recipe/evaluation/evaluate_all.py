@@ -3,12 +3,12 @@
 Evaluate a checkpoint on all available benchmarks.
 
 Usage:
-    python scripts/evaluate_all.py --model ./outputs/rl_math_grpo
-    python scripts/evaluate_all.py --model ./outputs/rl_math_grpo --num-samples 16
-    python scripts/evaluate_all.py --model ./outputs/rl_math_grpo --benchmarks math,aime
+    python -m aimo3_recipe.evaluation.evaluate_all --model ./outputs/rl_math_grpo
+    python -m aimo3_recipe.evaluation.evaluate_all --model ./outputs/rl_math_grpo --num-samples 16
+    python -m aimo3_recipe.evaluation.evaluate_all --model ./outputs/rl_math_grpo --benchmarks math,aime
 
     # For LoRA adapter checkpoints (auto-detected and merged):
-    python scripts/evaluate_all.py --model ./outputs/rl_math/checkpoint-142
+    python -m aimo3_recipe.evaluation.evaluate_all --model ./outputs/rl_math/checkpoint-142
 """
 
 import argparse
