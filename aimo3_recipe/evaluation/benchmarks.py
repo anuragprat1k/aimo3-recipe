@@ -135,7 +135,7 @@ def load_benchmark(config: BenchmarkConfig, max_samples: Optional[int] = None) -
     # Standardize column names
     if config.problem_column != "problem":
         dataset = dataset.rename_column(config.problem_column, "problem")
-    if config.answer_column != "answer" and config.answer_column != "solution":
+    if config.answer_column != "solution":
         dataset = dataset.rename_column(config.answer_column, "solution")
 
     return dataset
