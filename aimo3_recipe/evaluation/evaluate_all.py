@@ -133,6 +133,10 @@ def run_single_benchmark_process(
     # Set GPU visibility for this process
     os.environ["CUDA_VISIBLE_DEVICES"] = ",".join(str(g) for g in gpu_ids)
 
+    # Log GPU assignment for this benchmark
+    gpu_str = ",".join(str(g) for g in gpu_ids)
+    print(f"[GPU {gpu_str}] Starting evaluation: {benchmark_name}")
+
     # Import here to avoid CUDA initialization in main process
     from aimo3_recipe.evaluation.evaluate import MathEvaluator, EvalConfig
     from aimo3_recipe.evaluation.benchmarks import load_benchmark, get_benchmark
@@ -140,6 +144,7 @@ def run_single_benchmark_process(
     try:
         benchmark_config = get_benchmark(benchmark_name)
         dataset = load_benchmark(benchmark_config, max_samples)
+        print(f"[GPU {gpu_str}] {benchmark_name}: Loaded {len(dataset)} samples")
 
         config = EvalConfig(
             model_name_or_path=model_path,
@@ -152,8 +157,11 @@ def run_single_benchmark_process(
         evaluator = MathEvaluator(config)
         results = evaluator.evaluate(dataset)
 
+        print(f"[GPU {gpu_str}] {benchmark_name}: Completed - {results['accuracy']:.2%} ({results['correct']}/{results['total']})")
+
         return {
             "benchmark": benchmark_name,
+            "gpu_ids": gpu_ids,
             "success": True,
             "results": {
                 "accuracy": results["accuracy"],
@@ -163,8 +171,10 @@ def run_single_benchmark_process(
             "full_results": results,
         }
     except Exception as e:
+        print(f"[GPU {gpu_str}] {benchmark_name}: FAILED - {e}")
         return {
             "benchmark": benchmark_name,
+            "gpu_ids": gpu_ids,
             "success": False,
             "error": str(e),
         }
