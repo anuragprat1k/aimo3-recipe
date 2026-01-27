@@ -166,15 +166,10 @@ class MathEvaluator:
         """Initialize model for inference."""
         if self.config.use_vllm:
             from vllm import LLM, SamplingParams
-            # Fix Mistral tokenizer regex issue if applicable
-            tokenizer_kwargs = {}
-            if "mistral" in self.config.model_name_or_path.lower():
-                tokenizer_kwargs["fix_mistral_regex"] = True
             self.model = LLM(
                 model=self.config.model_name_or_path,
                 trust_remote_code=True,
                 dtype="bfloat16",
-                tokenizer_kwargs=tokenizer_kwargs if tokenizer_kwargs else None,
             )
         else:
             from transformers import AutoModelForCausalLM, AutoTokenizer
