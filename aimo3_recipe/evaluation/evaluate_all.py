@@ -105,7 +105,11 @@ def merge_lora_adapter(adapter_path: str, output_path: str | None = None) -> str
 
     # Save tokenizer (use from adapter if available, else from base)
     tokenizer_path = adapter_path if (adapter_path / "tokenizer_config.json").exists() else base_model_name
-    tokenizer = AutoTokenizer.from_pretrained(tokenizer_path, trust_remote_code=True)
+    # Fix Mistral tokenizer regex issue if applicable
+    tokenizer_kwargs = {"trust_remote_code": True}
+    if "mistral" in str(tokenizer_path).lower():
+        tokenizer_kwargs["fix_mistral_regex"] = True
+    tokenizer = AutoTokenizer.from_pretrained(tokenizer_path, **tokenizer_kwargs)
     tokenizer.save_pretrained(output_path)
 
     # Clean up GPU memory
