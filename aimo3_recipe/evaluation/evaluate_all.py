@@ -52,6 +52,48 @@ def is_lora_adapter(model_path: str) -> bool:
     return adapter_config.exists()
 
 
+def fix_mistral_tokenizer_json(tokenizer_dir: Path) -> None:
+    """
+    Fix the Mistral tokenizer regex pattern in tokenizer.json.
+
+    The Mistral tokenizer has a problematic regex pattern that causes warnings.
+    This function patches the tokenizer.json file directly to fix the issue.
+
+    See: https://huggingface.co/mistralai/Mistral-Small-3.1-24B-Instruct-2503/discussions/84
+    """
+    tokenizer_json_path = tokenizer_dir / "tokenizer.json"
+    if not tokenizer_json_path.exists():
+        return
+
+    with open(tokenizer_json_path, "r") as f:
+        tokenizer_data = json.load(f)
+
+    # The problematic pattern and its fix
+    # The issue is with the (?i:...) case-insensitive group which isn't valid in Rust regex
+    problematic_pattern = "(?i:'s|'t|'re|'ve|'m|'ll|'d)"
+    fixed_pattern = "(?:'([sS]|[tT]|[rR][eE]|[vV][eE]|[mM]|[lL][lL]|[dD]))"
+
+    modified = False
+
+    # Check pre_tokenizer for the pattern
+    if "pre_tokenizer" in tokenizer_data:
+        pre_tok = tokenizer_data["pre_tokenizer"]
+        if "pretokenizers" in pre_tok:
+            for pt in pre_tok["pretokenizers"]:
+                if pt.get("type") == "Split" and "pattern" in pt:
+                    pattern = pt["pattern"]
+                    if isinstance(pattern, dict) and "Regex" in pattern:
+                        regex_str = pattern["Regex"]
+                        if problematic_pattern in regex_str:
+                            pattern["Regex"] = regex_str.replace(problematic_pattern, fixed_pattern)
+                            modified = True
+
+    if modified:
+        with open(tokenizer_json_path, "w") as f:
+            json.dump(tokenizer_data, f, indent=2)
+        print(f"  Fixed Mistral tokenizer regex in {tokenizer_json_path}")
+
+
 def merge_lora_adapter(adapter_path: str, output_path: str | None = None) -> str:
     """
     Merge a LoRA adapter with its base model.
@@ -105,12 +147,12 @@ def merge_lora_adapter(adapter_path: str, output_path: str | None = None) -> str
 
     # Save tokenizer (use from adapter if available, else from base)
     tokenizer_path = adapter_path if (adapter_path / "tokenizer_config.json").exists() else base_model_name
-    # Fix Mistral tokenizer regex issue if applicable
-    tokenizer_kwargs = {"trust_remote_code": True}
-    if "mistral" in str(tokenizer_path).lower():
-        tokenizer_kwargs["fix_mistral_regex"] = True
-    tokenizer = AutoTokenizer.from_pretrained(tokenizer_path, **tokenizer_kwargs)
+    tokenizer = AutoTokenizer.from_pretrained(tokenizer_path, trust_remote_code=True)
     tokenizer.save_pretrained(output_path)
+
+    # Fix Mistral tokenizer regex issue in the saved tokenizer.json
+    if "mistral" in str(tokenizer_path).lower() or "mistral" in str(base_model_name).lower():
+        fix_mistral_tokenizer_json(output_path)
 
     # Clean up GPU memory
     del model, merged_model
