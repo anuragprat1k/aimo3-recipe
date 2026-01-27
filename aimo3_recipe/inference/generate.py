@@ -66,9 +66,13 @@ class MathGenerator:
         else:
             from transformers import AutoModelForCausalLM, AutoTokenizer
 
+            # Fix Mistral tokenizer regex issue if applicable
+            tokenizer_kwargs = {"trust_remote_code": True}
+            if "mistral" in self.config.model_name_or_path.lower():
+                tokenizer_kwargs["fix_mistral_regex"] = True
             self.tokenizer = AutoTokenizer.from_pretrained(
                 self.config.model_name_or_path,
-                trust_remote_code=True,
+                **tokenizer_kwargs,
             )
             self.model = AutoModelForCausalLM.from_pretrained(
                 self.config.model_name_or_path,
