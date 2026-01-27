@@ -17,6 +17,7 @@ Usage:
 
 import argparse
 import json
+import multiprocessing as mp
 import os
 import subprocess
 import sys
@@ -213,7 +214,9 @@ def evaluate_parallel(
     all_results = {}
     benchmark_queue = list(benchmark_names)
 
-    with ProcessPoolExecutor(max_workers=max_parallel) as executor:
+    # Use 'spawn' context for CUDA compatibility (fork doesn't work with CUDA)
+    ctx = mp.get_context('spawn')
+    with ProcessPoolExecutor(max_workers=max_parallel, mp_context=ctx) as executor:
         futures = {}
         gpu_assignments = {}
 
