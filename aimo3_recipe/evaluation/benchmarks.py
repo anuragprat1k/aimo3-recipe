@@ -134,8 +134,14 @@ def load_benchmark(config: BenchmarkConfig, max_samples: Optional[int] = None) -
 
     # Standardize column names
     if config.problem_column != "problem":
+        if "problem" in dataset.column_names:
+            dataset = dataset.remove_columns(["problem"])
         dataset = dataset.rename_column(config.problem_column, "problem")
+
     if config.answer_column != "solution":
+        # Remove existing 'solution' column if it exists (e.g., MATH500 has both 'solution' and 'answer')
+        if "solution" in dataset.column_names:
+            dataset = dataset.remove_columns(["solution"])
         dataset = dataset.rename_column(config.answer_column, "solution")
 
     return dataset
