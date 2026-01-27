@@ -194,6 +194,27 @@ mypy aimo3_recipe
 
 Ruff config: line-length=100, target Python 3.10
 
+## Git Workflow
+
+**Always pull and rebase before creating or updating a PR:**
+
+```bash
+# Fetch latest changes from main branch
+git fetch origin main
+
+# Rebase your branch onto main
+git rebase origin/main
+
+# If there are conflicts, resolve them, then:
+git add .
+git rebase --continue
+
+# Force push after rebase (only on feature branches)
+git push --force-with-lease
+```
+
+This ensures your PR has no merge conflicts and includes the latest changes from main.
+
 ## Common Tasks
 
 ### Adding a New Benchmark
