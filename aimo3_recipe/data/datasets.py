@@ -122,6 +122,93 @@ def load_math_dataset(
     return dataset
 
 
+def load_hendrycks_math(
+    split: str = "train",
+    min_level: int = 3,
+    max_level: int = 5,
+    subjects: Optional[list[str]] = None,
+    max_samples: Optional[int] = None,
+) -> Dataset:
+    """
+    Load Hendrycks MATH dataset from EleutherAI with level filtering.
+
+    Loads problems from levels 3-5 (by default) across all subcategories,
+    which represent medium to hard difficulty problems.
+
+    Args:
+        split: Dataset split ("train" or "test")
+        min_level: Minimum difficulty level (1-5), default 3
+        max_level: Maximum difficulty level (1-5), default 5
+        subjects: List of subjects to include. If None, includes all subjects:
+            - algebra
+            - counting_and_probability
+            - geometry
+            - intermediate_algebra
+            - number_theory
+            - prealgebra
+            - precalculus
+        max_samples: Maximum number of samples to load (after filtering)
+
+    Returns:
+        Dataset with columns: problem, solution, level, type (subject)
+    """
+    from datasets import concatenate_datasets
+
+    # All available subjects in the Hendrycks MATH dataset
+    all_subjects = [
+        "algebra",
+        "counting_and_probability",
+        "geometry",
+        "intermediate_algebra",
+        "number_theory",
+        "prealgebra",
+        "precalculus",
+    ]
+
+    subjects_to_load = subjects if subjects else all_subjects
+
+    # Valid levels to filter for
+    valid_levels = [f"Level {i}" for i in range(min_level, max_level + 1)]
+
+    datasets_list = []
+
+    for subject in subjects_to_load:
+        try:
+            # Load the specific subject subset
+            ds = load_dataset("EleutherAI/hendrycks_math", subject, split=split)
+
+            # Filter by level range
+            ds = ds.filter(lambda x: x["level"] in valid_levels)
+
+            # Add subject/type column if not present
+            if "type" not in ds.column_names:
+                ds = ds.add_column("type", [subject] * len(ds))
+
+            if len(ds) > 0:
+                datasets_list.append(ds)
+                print(f"  Loaded {len(ds)} problems from {subject} (levels {min_level}-{max_level})")
+
+        except Exception as e:
+            print(f"  Warning: Could not load subject '{subject}': {e}")
+
+    if not datasets_list:
+        raise ValueError(
+            f"No data loaded from EleutherAI/hendrycks_math. "
+            f"Check that the dataset is accessible and subjects {subjects_to_load} exist."
+        )
+
+    # Concatenate all subject datasets
+    combined = concatenate_datasets(datasets_list)
+
+    print(f"  Total: {len(combined)} problems from levels {min_level}-{max_level}")
+
+    if max_samples and len(combined) > max_samples:
+        combined = combined.shuffle(seed=42).select(range(max_samples))
+        print(f"  Sampled down to {max_samples} problems")
+
+    return combined
+
+
 def load_amc_aime_dataset(
     source: str = "amc_aime",
     split: str = "train",

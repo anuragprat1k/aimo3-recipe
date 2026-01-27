@@ -8,7 +8,8 @@ model:
 
 # Stage 1: CoT SFT via Tinker
 stage1_cot:
-  dataset: "AI-MO/NuminaMath-CoT"
+  dataset: "EleutherAI/hendrycks_math"
+  dataset_levels: [3, 4, 5]  # Only levels 3-5 (medium to hard difficulty)
   batch_size: 32
   num_epochs: 3
   learning_rate: null  # Auto-computed based on LoRA rank
@@ -18,7 +19,8 @@ stage1_cot:
 
 # Stage 2: TIR SFT via Tinker
 stage2_tir:
-  dataset: "AI-MO/NuminaMath-TIR"
+  dataset: "EleutherAI/hendrycks_math"
+  dataset_levels: [3, 4, 5]  # Only levels 3-5 (medium to hard difficulty)
   batch_size: 16
   num_epochs: 2
   learning_rate: null
@@ -28,7 +30,8 @@ stage2_tir:
 
 # Stage 3: RL via Tinker
 stage3_rl:
-  dataset: "AI-MO/NuminaMath-CoT"
+  dataset: "EleutherAI/hendrycks_math"
+  dataset_levels: [3, 4, 5]  # Only levels 3-5 (medium to hard difficulty)
   batch_size: 64
   group_size: 16
   num_epochs: 1

@@ -28,6 +28,7 @@ from aimo3_recipe.training.sft_cot import SFTCoTTrainer, SFTCoTConfig
 from aimo3_recipe.training.sft_tir import SFTTIRTrainer, SFTTIRConfig
 from aimo3_recipe.training.rl_math import RLMathTrainer, RLMathConfig, MathRewardFunction, LLMJudgeRewardFunction
 from aimo3_recipe.evaluation.answer_extraction import verify_answer
+from aimo3_recipe.data.datasets import load_hendrycks_math
 
 
 def get_latest_checkpoint(output_dir: str) -> str | None:
@@ -63,36 +64,33 @@ def get_latest_checkpoint(output_dir: str) -> str | None:
 
 
 def load_math_datasets(stage: str, max_samples: int | None = None) -> tuple[Dataset, Dataset]:
-    """Load appropriate datasets for each training stage."""
+    """Load appropriate datasets for each training stage.
+
+    Uses Hendrycks MATH dataset (EleutherAI/hendrycks_math) with levels 3-5
+    as the primary training dataset for all stages.
+    """
 
     if stage == "cot":
-        # NuminaMath-CoT for Chain-of-Thought training
-        dataset = load_dataset("AI-MO/NuminaMath-CoT", split="train")
-        if max_samples:
-            dataset = dataset.select(range(min(max_samples, len(dataset))))
+        # Use Hendrycks MATH levels 3-5 for Chain-of-Thought training
+        print("Loading Hendrycks MATH dataset (levels 3-5) for CoT training...")
+        dataset = load_hendrycks_math(split="train", min_level=3, max_level=5, max_samples=max_samples)
         # Split into train/eval
         split = dataset.train_test_split(test_size=0.01, seed=42)
         return split["train"], split["test"]
 
     elif stage == "tir":
-        # NuminaMath-TIR for Tool-Integrated Reasoning
-        dataset = load_dataset("AI-MO/NuminaMath-TIR", split="train")
-        if max_samples:
-            dataset = dataset.select(range(min(max_samples, len(dataset))))
+        # Use Hendrycks MATH levels 3-5 for Tool-Integrated Reasoning
+        print("Loading Hendrycks MATH dataset (levels 3-5) for TIR training...")
+        dataset = load_hendrycks_math(split="train", min_level=3, max_level=5, max_samples=max_samples)
         split = dataset.train_test_split(test_size=0.01, seed=42)
         return split["train"], split["test"]
 
     elif stage == "rl":
-        # Use MATH dataset for RL (has cleaner answer format)
-        try:
-            dataset = load_dataset("lighteval/MATH-Hard", split="train")
-            dataset = dataset.rename_columns({"problem": "problem", "solution": "answer"})
-        except Exception as exc:
-            print(f"Failed to load lighteval/MATH ({exc}); falling back to NuminaMath-CoT.")
-            dataset = load_dataset("AI-MO/NuminaMath-CoT", split="train")
-            dataset = dataset.rename_columns({"solution": "answer"})
-        if max_samples:
-            dataset = dataset.select(range(min(max_samples, len(dataset))))
+        # Use Hendrycks MATH levels 3-5 for RL training
+        print("Loading Hendrycks MATH dataset (levels 3-5) for RL training...")
+        dataset = load_hendrycks_math(split="train", min_level=3, max_level=5, max_samples=max_samples)
+        # Rename solution to answer for RL compatibility
+        dataset = dataset.rename_columns({"solution": "answer"})
         split = dataset.train_test_split(test_size=0.01, seed=42)
         return split["train"], split["test"]
 
