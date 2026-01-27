@@ -54,17 +54,49 @@ def extract_boxed_answer(text: str) -> Optional[str]:
     return answers[-1].strip() if answers else None
 
 
+def extract_gsm8k_answer(text: str) -> Optional[str]:
+    """
+    Extract answer from GSM8K format (#### answer).
+
+    GSM8K uses '####' followed by the final numeric answer.
+
+    Args:
+        text: Solution text containing #### answer
+
+    Returns:
+        Extracted answer string or None if not found
+    """
+    if not text or "####" not in text:
+        return None
+
+    # Match #### followed by the answer (typically a number)
+    match = re.search(r"####\s*(.+?)(?:\n|$)", text)
+    if match:
+        answer = match.group(1).strip()
+        # Clean up any trailing punctuation
+        answer = answer.rstrip(".")
+        return answer
+
+    return None
+
+
 def extract_answer_from_solution(solution: str) -> Optional[str]:
     """
     Extract answer using multiple strategies.
 
     Tries in order:
     1. \\boxed{} format
-    2. "The answer is X" pattern
-    3. "= X" at end of solution
+    2. GSM8K #### format
+    3. "The answer is X" pattern
+    4. "= X" at end of solution
     """
     # Try boxed first
     answer = extract_boxed_answer(solution)
+    if answer:
+        return answer
+
+    # Try GSM8K format (#### answer)
+    answer = extract_gsm8k_answer(solution)
     if answer:
         return answer
 
