@@ -6,6 +6,7 @@ Provides loaders for key math datasets:
 - NuminaMath-TIR: ~70k problems with Tool-Integrated Reasoning solutions
 - OpenMathReasoning: 540k problems with long-reasoning solutions (from NemoSkills)
 - MATH: Hendrycks MATH benchmark
+- Big-Math: 250k+ high-quality verified problems for RL training
 """
 
 from datasets import load_dataset, Dataset, DatasetDict
@@ -118,6 +119,46 @@ def load_math_dataset(
 
     if subject:
         dataset = dataset.filter(lambda x: x["type"] == subject)
+
+    return dataset
+
+
+def load_big_math_rl(
+    split: str = "train",
+    max_samples: Optional[int] = None,
+) -> Dataset:
+    """
+    Load Big-Math RL-Verified dataset.
+
+    A large-scale, high-quality dataset specifically designed for reinforcement
+    learning in math. Contains 250k+ problems with verifiable answers,
+    decontaminated against common test sets.
+
+    Reference: "Big-Math: A Large-Scale, High-Quality Math Dataset for
+    Reinforcement Learning in Language Models" (arXiv:2502.17387, Feb 2025)
+
+    Key features:
+    - Uniquely verifiable solutions (single correct answer)
+    - Open-ended formulations (not multiple choice)
+    - Decontaminated against MATH-500 and Omni-MATH test sets
+    - Quality-filtered using Llama models
+
+    Args:
+        split: Dataset split ("train")
+        max_samples: Maximum number of samples to load
+
+    Returns:
+        Dataset with columns: problem, answer (and additional metadata)
+    """
+    dataset = load_dataset("SynthLabsAI/Big-Math-RL-Verified", split=split)
+
+    # Normalize column names to match expected format
+    # Big-Math uses 'problem' and 'answer' columns which is what we need
+    if "question" in dataset.column_names and "problem" not in dataset.column_names:
+        dataset = dataset.rename_column("question", "problem")
+
+    if max_samples:
+        dataset = dataset.select(range(min(max_samples, len(dataset))))
 
     return dataset
 

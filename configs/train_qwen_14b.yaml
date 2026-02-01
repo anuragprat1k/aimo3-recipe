@@ -51,8 +51,11 @@ stage2_tir:
   output_dir: "./outputs/sft_tir"
 
 # Stage 3: RL with correctness rewards
+# Using Big-Math RL-Verified: 250k+ verified problems designed for RL
+# Reference: arXiv:2502.17387 "Big-Math: A Large-Scale, High-Quality Math
+# Dataset for Reinforcement Learning in Language Models" (Feb 2025)
 stage3_rl:
-  dataset: "lighteval/MATH"
+  dataset: "SynthLabsAI/Big-Math-RL-Verified"
   num_epochs: 1
   batch_size: 64
   group_size: 16

@@ -27,8 +27,10 @@ stage2_tir:
   log_dir: "./outputs/tinker_sft_tir"
 
 # Stage 3: RL via Tinker
+# Using Big-Math RL-Verified: 250k+ verified problems designed for RL
+# Reference: arXiv:2502.17387 "Big-Math" (Feb 2025)
 stage3_rl:
-  dataset: "AI-MO/NuminaMath-CoT"
+  dataset: "SynthLabsAI/Big-Math-RL-Verified"
   batch_size: 64
   group_size: 16
   num_epochs: 1
