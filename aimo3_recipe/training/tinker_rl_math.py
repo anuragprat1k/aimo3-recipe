@@ -56,7 +56,9 @@ class MathRLConfig:
     max_tokens: int = 4096
 
     # Dataset
-    dataset_name: str = "AI-MO/NuminaMath-CoT"
+    # Big-Math RL-Verified: 250k+ verified problems designed for RL training
+    # Reference: arXiv:2502.17387 "Big-Math" (Feb 2025)
+    dataset_name: str = "SynthLabsAI/Big-Math-RL-Verified"
     dataset_split: str = "train"
     max_samples: Optional[int] = None
 
@@ -266,6 +268,9 @@ def train_math_rl(config: MathRLConfig) -> None:
     # Load dataset
     logger.info(f"Loading dataset: {config.dataset_name}")
     dataset = load_dataset(config.dataset_name, split=config.dataset_split)
+    # Handle Big-Math column naming (may use 'question' instead of 'problem')
+    if "question" in dataset.column_names and "problem" not in dataset.column_names:
+        dataset = dataset.rename_column("question", "problem")
     if config.max_samples:
         dataset = dataset.select(range(min(config.max_samples, len(dataset))))
     logger.info(f"Dataset size: {len(dataset)}")
@@ -348,7 +353,8 @@ def train_math_rl(config: MathRLConfig) -> None:
             logger.info(f"  Submitting {len(batch)} sampling requests (group_size={config.group_size})...")
             for example in batch:
                 problem = example["problem"]
-                ground_truth = example["solution"]
+                # Support both Big-Math ("answer") and NuminaMath ("solution") column names
+                ground_truth = example.get("answer") or example.get("solution", "")
 
                 messages = [{"role": "user", "content": problem}]
                 prompt = renderer.build_generation_prompt(messages)

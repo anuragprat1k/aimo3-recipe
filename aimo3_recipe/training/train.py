@@ -83,14 +83,25 @@ def load_math_datasets(stage: str, max_samples: int | None = None) -> tuple[Data
         return split["train"], split["test"]
 
     elif stage == "rl":
-        # Use MATH dataset for RL (has cleaner answer format)
+        # Use Big-Math RL-Verified dataset for RL training
+        # This dataset is specifically designed for RL with verifiable answers
+        # Reference: arXiv:2502.17387 "Big-Math: A Large-Scale, High-Quality
+        # Math Dataset for Reinforcement Learning in Language Models"
         try:
-            dataset = load_dataset("lighteval/MATH-Hard", split="train")
-            dataset = dataset.rename_columns({"problem": "problem", "solution": "answer"})
+            dataset = load_dataset("SynthLabsAI/Big-Math-RL-Verified", split="train")
+            # Big-Math uses 'problem' and 'answer' columns which match our format
+            if "question" in dataset.column_names and "problem" not in dataset.column_names:
+                dataset = dataset.rename_column("question", "problem")
+            print(f"Loaded Big-Math RL-Verified dataset: {len(dataset)} problems")
         except Exception as exc:
-            print(f"Failed to load lighteval/MATH ({exc}); falling back to NuminaMath-CoT.")
-            dataset = load_dataset("AI-MO/NuminaMath-CoT", split="train")
-            dataset = dataset.rename_columns({"solution": "answer"})
+            print(f"Failed to load Big-Math RL-Verified ({exc}); falling back to MATH-Hard.")
+            try:
+                dataset = load_dataset("lighteval/MATH-Hard", split="train")
+                dataset = dataset.rename_columns({"problem": "problem", "solution": "answer"})
+            except Exception as exc2:
+                print(f"Failed to load lighteval/MATH-Hard ({exc2}); falling back to NuminaMath-CoT.")
+                dataset = load_dataset("AI-MO/NuminaMath-CoT", split="train")
+                dataset = dataset.rename_columns({"solution": "answer"})
         if max_samples:
             dataset = dataset.select(range(min(max_samples, len(dataset))))
         split = dataset.train_test_split(test_size=0.01, seed=42)
