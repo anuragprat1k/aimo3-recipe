@@ -6,6 +6,7 @@ Provides loaders for key math datasets:
 - NuminaMath-TIR: ~70k problems with Tool-Integrated Reasoning solutions
 - OpenMathReasoning: 540k problems with long-reasoning solutions (from NemoSkills)
 - MATH: Hendrycks MATH benchmark
+- SimpleRL-Zoo-Data: ~8k level 3-5 problems from HKUST-NLP (for RL training)
 """
 
 from datasets import load_dataset, Dataset, DatasetDict
@@ -196,6 +197,51 @@ def create_mixed_difficulty_dataset(
     combined = combined.shuffle(seed=seed)
 
     return combined
+
+
+def load_simplerl_zoo_data(
+    split: str = "train",
+    max_samples: Optional[int] = None,
+    prompt_format: str = "qwen",
+) -> Dataset:
+    """
+    Load SimpleRL-Zoo-Data dataset from HKUST-NLP.
+
+    Contains math problems from GSM8K and MATH datasets, organized by difficulty levels.
+    Uses level 3-5 (Hard) problems which contains approximately 8,000 problems.
+
+    Source: https://huggingface.co/datasets/hkust-nlp/SimpleRL-Zoo-Data
+    Paper: SimpleRL-Zoo: Investigating and Taming Zero Reinforcement Learning
+           for Open Base Models in the Wild
+
+    Args:
+        split: Dataset split ("train" or "test")
+        max_samples: Maximum number of samples to load
+        prompt_format: Prompt format to use ("qwen" or "abel")
+
+    Returns:
+        Dataset with columns: problem, solution
+    """
+    # Dataset configuration name for level 3-5 (Hard) difficulty
+    config_name = f"simplelr_{prompt_format}_level3to5"
+
+    dataset = load_dataset("hkust-nlp/SimpleRL-Zoo-Data", config_name, split=split)
+
+    # Standardize column names if needed
+    # The dataset may use "query" instead of "problem" and "answer" instead of "solution"
+    column_mapping = {}
+    if "query" in dataset.column_names and "problem" not in dataset.column_names:
+        column_mapping["query"] = "problem"
+    if "answer" in dataset.column_names and "solution" not in dataset.column_names:
+        column_mapping["answer"] = "solution"
+
+    if column_mapping:
+        dataset = dataset.rename_columns(column_mapping)
+
+    if max_samples:
+        dataset = dataset.select(range(min(max_samples, len(dataset))))
+
+    return dataset
 
 
 def get_dataset_stats(dataset: Dataset) -> dict:

@@ -96,6 +96,19 @@ def load_math_datasets(stage: str, max_samples: int | None = None) -> tuple[Data
         split = dataset.train_test_split(test_size=0.01, seed=42)
         return split["train"], split["test"]
 
+    elif stage == "rl_simplerl":
+        # Use SimpleRL-Zoo-Data level 3-5 for RL training (~8k problems)
+        # From HKUST-NLP: https://huggingface.co/datasets/hkust-nlp/SimpleRL-Zoo-Data
+        from aimo3_recipe.data.datasets import load_simplerl_zoo_data
+        dataset = load_simplerl_zoo_data(split="train")
+        # Rename columns for RL training (expects problem + answer)
+        if "solution" in dataset.column_names:
+            dataset = dataset.rename_columns({"solution": "answer"})
+        if max_samples:
+            dataset = dataset.select(range(min(max_samples, len(dataset))))
+        split = dataset.train_test_split(test_size=0.01, seed=42)
+        return split["train"], split["test"]
+
     else:
         raise ValueError(f"Unknown stage: {stage}")
 
