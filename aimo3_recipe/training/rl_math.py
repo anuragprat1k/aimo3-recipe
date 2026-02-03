@@ -543,6 +543,19 @@ class SampleTrackingRewardFunction:
 class MetricsLoggingCallback(TrainerCallback):
     """Callback to print training metrics to console."""
 
+    def _format_value(self, v):
+        """Format a metric value for display."""
+        try:
+            # Handle tensors
+            if hasattr(v, "item"):
+                v = v.item()
+            # Format floats/ints with decimals
+            if isinstance(v, (int, float)):
+                return f"{v:.4f}"
+            return str(v)
+        except Exception:
+            return str(v)
+
     def on_log(self, args, state, control, logs=None, **kwargs):
         """Print metrics when trainer logs them."""
         if not state.is_world_process_zero:
@@ -557,10 +570,11 @@ class MetricsLoggingCallback(TrainerCallback):
             step_info += f" (Epoch {logs['epoch']:.2f})"
 
         # Filter and format metrics
+        excluded = ("epoch", "total_flos", "train_runtime", "train_samples_per_second", "train_steps_per_second")
         metrics_str = ", ".join(
-            f"{k}: {v:.4f}" if isinstance(v, float) else f"{k}: {v}"
+            f"{k}: {self._format_value(v)}"
             for k, v in sorted(logs.items())
-            if k not in ("epoch", "total_flos", "train_runtime", "train_samples_per_second", "train_steps_per_second")
+            if k not in excluded
         )
 
         if metrics_str:
